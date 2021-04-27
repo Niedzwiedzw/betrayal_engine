@@ -96,7 +96,7 @@ impl ProcessQuery {
         let mut c = Cursor::new(val);
         Ok((
             address,
-            c.read_i32::<BigEndian>()
+            c.read_i32::<LittleEndian>()
                 .map_err(|_e| BetrayalError::PartialRead)?,
         ))
     }
@@ -128,7 +128,7 @@ impl ProcessQuery {
         Ok(Box::new(
             mappings
                 .into_iter()
-                .flat_map(|map| (map.base..map.ceiling).step_by(4))
+                .flat_map(|map| (map.base..(map.ceiling-3)))
                 .filter_map(move |address| Self::read_at(pid, address).ok()),
         ))
     }

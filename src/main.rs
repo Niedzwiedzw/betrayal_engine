@@ -14,7 +14,6 @@ use nix::{
 
 use error::{BetrayalError, BetrayalResult};
 use procmaps;
-use trickster::{Process, RegionPermissions};
 mod error;
 mod process;
 
@@ -62,9 +61,24 @@ pub fn read_memory(pid: i32, address: usize, bytes_requested: usize) -> Betrayal
 
 pub type QueryResult = (usize, i32);
 
+#[derive(Debug)]
 pub struct ProcessQuery {
     pub pid: i32,
-    pub results: Vec<i32>,
+    pub results: Vec<QueryResult>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub enum Filter {
+    IsEqual(i32),
+}
+
+impl Filter {
+    pub fn matches(self, result: QueryResult) -> bool {
+        let (_address, val) = result;
+        match self {
+            Self::IsEqual(v) => v == val,
+        }
+    }
 }
 
 impl ProcessQuery {
@@ -75,25 +89,36 @@ impl ProcessQuery {
         }
     }
 
+    
+
     fn read_at(pid: i32, address: usize) -> BetrayalResult<QueryResult> {
         let val = read_memory(pid, address, 4)?;
         let mut c = Cursor::new(val);
         Ok((
             address,
-            c.read_i32::<LittleEndian>()
+            c.read_i32::<BigEndian>()
                 .map_err(|_e| BetrayalError::PartialRead)?,
         ))
     }
 
+    pub fn perform_query(&mut self, filter: Filter) -> BetrayalResult<()> {
+        if self.results.len() == 0 {
+            let results = self.query()?.filter(|v| filter.matches(*v)).collect::<Vec<_>>();
+            self.results = results;
+            return Ok(())
+        }
+        self.results.retain(|v| filter.matches(*v));
+
+        Ok(())
+    }
+
     fn query<'process, 'result>(
         &'process self,
-        value: u32,
     ) -> BetrayalResult<Box<impl Iterator<Item = QueryResult> + 'result>>
     where
         'process: 'result,
     {
         let pid = self.pid;
-        // let mappings = procmaps::Mappings::from_pid(pid).map_err(|_e| BetrayalError::BadPid)?.into_iter().collect::<Vec<_>>();
         let mappings = std::mem::take(
             procmaps::Mappings::from_pid(pid)
                 .map_err(|_e| BetrayalError::BadPid)?
@@ -107,11 +132,23 @@ impl ProcessQuery {
                 .filter_map(move |address| Self::read_at(pid, address).ok()),
         ))
     }
+
+
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pid = take_input::<i32>("PID")?;
 
+    let mut process = ProcessQuery::new(pid);
+    while process.results.len() != 1 {
+        let value: i32 = take_input("")?;
+        let filter = Filter::IsEqual(value);
+        process.perform_query(filter)?;
+        for (index, (address, value)) in process.results.iter().enumerate() {
+            println!("{}. {} -- {}", index, address, value);
+        }
+    }
+    println!("{:#?}", process);
     // for mapping in maps.iter() {
     //     println!("region: {:x} - {:x}", mapping.base, mapping.ceiling);
     //     for val in (mapping.base..mapping.ceiling)

@@ -72,15 +72,16 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
     match process_vm_writev(Pid::from_raw(pid), &[IoVec::from_slice(&buffer)], &[remote]) {
         Ok(bytes_written) => {
             if bytes_written != bytes_requested {
-                return Err(BetrayalError::BadWrite(format!("bad write length: {} != {}", bytes_written, bytes_requested)));
+                return Err(BetrayalError::BadWrite(format!(
+                    "bad write length: {} != {}",
+                    bytes_written, bytes_requested
+                )));
             } else {
-                return Ok(())
+                return Ok(());
             }
-
         }
         Err(e) => return Err(BetrayalError::BadWrite(format!("write error: {}", e))),
     }
-    
 }
 
 pub type QueryResult = (usize, i32);
@@ -127,7 +128,9 @@ impl ProcessQuery {
 
     fn write_at(pid: i32, address: usize, value: i32) -> BetrayalResult<()> {
         let mut buffer = vec![];
-        buffer.write_i32::<NativeEndian>(value).map_err(|e| BetrayalError::BadWrite(format!("bad write: {}", e)))?;
+        buffer
+            .write_i32::<NativeEndian>(value)
+            .map_err(|e| BetrayalError::BadWrite(format!("bad write: {}", e)))?;
         write_memory(pid, address, buffer)?;
         Ok(())
     }
@@ -142,8 +145,12 @@ impl ProcessQuery {
 
     pub fn perform_write(&mut self, writer: Writer) -> BetrayalResult<()> {
         let (index, value) = writer;
-        let (address, _current_value) = self.results.get(index as usize).ok_or(BetrayalError::BadWrite(format!("no such address")))?;
+        let (address, _current_value) = self
+            .results
+            .get(index as usize)
+            .ok_or(BetrayalError::BadWrite(format!("no such address")))?;
         Self::write_at(self.pid, *address, value)?;
+        self.update_results()?;
         Ok(())
     }
     pub fn perform_query(&mut self, filter: Filter) -> BetrayalResult<()> {
@@ -179,8 +186,21 @@ impl ProcessQuery {
         Ok(Box::new(
             mappings
                 .into_iter()
-                .flat_map(|map| (map.base..(map.ceiling - 3)))
-                .filter_map(move |address| Self::read_at(pid, address).ok()),
+                // .flat_map(|map| (map.base..(map.ceiling - 3)))
+                .filter_map(
+                    move |map| match read_memory(pid, map.base, map.ceiling - map.base) {
+                        Ok(memory) => Some((map, memory)),
+                        Err(_e) => None,
+                    },
+                )
+                .flat_map(|(map, memory)| {
+                    (0..(map.ceiling - map.base - 3)).filter_map(move |index| {
+                        match Cursor::new(&memory[index..index + 4]).read_i32::<NativeEndian>() {
+                            Ok(value) => Some((map.base + index, value)),
+                            Err(_e) => None,
+                        }
+                    })
+                }), // .filter_map(move |(map, memory)| Self::read_at(pid, address).ok())
         ))
     }
 }

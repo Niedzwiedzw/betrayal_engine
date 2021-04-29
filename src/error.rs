@@ -6,10 +6,14 @@ pub enum BetrayalError {
     BadPid,
     #[error(transparent)]
     ProcError(#[from] procfs::ProcError),
-    #[error(transparent)]
-    Other(#[from] anyhow::Error),
+    #[error("Improper command: {0}")]
+    BadCommand(String),
     #[error("Partial read occured - aborting")]
     PartialRead,
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+    #[error("memory write resulted in an error {0}")]
+    BadWrite(String),
 }
 
 pub type BetrayalResult<T> = Result<T, BetrayalError>;

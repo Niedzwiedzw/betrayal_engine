@@ -9,6 +9,7 @@ edition = "2018"
 [dependencies]
 anyhow = "1.0.40"
 byteorder = "1.4.3"
+itertools = "0.10.0"
 nix = "0.20.0"
 nom = "6.1.2"
 procfs = "0.9.1"

@@ -3,11 +3,19 @@
 mod commands;
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 use commands::Command;
-use std::{fs::File, io::Write, path::Path, str::FromStr};
+use std::{
+    fs::File,
+    io::Write,
+    path::Path,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 use std::{
     io::{self, BufRead, Read},
     ops::DerefMut,
 };
+
+use itertools::Itertools;
 
 use io::Cursor;
 use nix::{
@@ -163,8 +171,7 @@ impl ProcessQuery {
     pub fn perform_query(&mut self, filter: Filter) -> BetrayalResult<()> {
         if self.results.len() == 0 {
             let results = self
-                .query()?
-                .par_bridge()
+                .query(filter)?
                 .into_par_iter()
                 .filter(|v| filter.matches(*v))
                 .collect::<Vec<_>>();
@@ -179,7 +186,9 @@ impl ProcessQuery {
 
     fn query<'process, 'result>(
         &'process self,
-    ) -> BetrayalResult<Box<impl Iterator<Item = QueryResult> + 'result>>
+        filter: Filter,
+        // ) -> BetrayalResult<Box<impl Iterator<Item = QueryResult> + 'result>>
+    ) -> BetrayalResult<Vec<QueryResult>>
     where
         'process: 'result,
     {
@@ -190,32 +199,58 @@ impl ProcessQuery {
                 .deref_mut(),
         );
         mappings.retain(|m| m.perms.writable && m.perms.readable);
+        let mappings: Vec<_> = mappings
+            .into_iter()
+            .unique_by(|m| m.base)
+            .unique_by(|m| m.ceiling)
+            .collect();
         let scannable = mappings.len();
-        Ok(Box::new(
-            mappings
-                .into_iter()
-                // .flat_map(|map| (map.base..(map.ceiling - 3)))
-                .enumerate()
-                .filter_map(move |(index, map)| {
-                    println!("\r::{} / {} scanned   ", index, scannable);
-                    return match read_memory(pid, map.base, map.ceiling - map.base) {
-                        Ok(memory) => Some((map, memory)),
-                        Err(_e) => None,
+        let mut left_to_scan = scannable;
+
+        let results: Arc<Mutex<Vec<QueryResult>>> = Default::default();
+        let tasks: Vec<std::thread::JoinHandle<_>> = mappings
+            .into_iter()
+            .enumerate()
+            .map(|(index, map)| {
+                let results = Arc::clone(&results);
+                std::thread::spawn(move || {
+                    let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base)
+                    {
+                        Ok(memory) => (0..(map.ceiling - map.base - 3))
+                            .filter_map(move |index| {
+                                match Cursor::new(&memory[index..index + 4])
+                                    .read_i32::<NativeEndian>()
+                                {
+                                    Ok(value) => Some((map.base + index, value)),
+                                    Err(_e) => None,
+                                }
+                            })
+                            .filter(|result| filter.matches(*result))
+                            .collect::<Vec<_>>(),
+                        Err(_e) => {
+                            vec![]
+                        }
                     };
+                    results
+                        .lock()
+                        .expect("a previous thread crashed while accessing mutex...")
+                        .append(&mut results_chunk);
+                    index
                 })
-                .flat_map(|(map, memory)| {
-                    (0..(map.ceiling - map.base - 3))
-                        .par_bridge()
-                        .filter_map(move |index| {
-                            match Cursor::new(&memory[index..index + 4]).read_i32::<NativeEndian>()
-                            {
-                                Ok(value) => Some((map.base + index, value)),
-                                Err(_e) => None,
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                }), // .filter_map(move |(map, memory)| Self::read_at(pid, address).ok())
-        ))
+            })
+            .collect();
+
+        for task in tasks {
+            let _index = task.join();
+            left_to_scan -= 1;
+            print!(
+                "\r :: {} / {} regions scanned     ",
+                scannable - left_to_scan,
+                scannable
+            );
+        }
+        let results = results.lock().expect("some thread crashed").clone();
+        return Ok(results);
     }
 }
 
@@ -242,22 +277,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     println!("{:#?}", process);
-    // for mapping in maps.iter() {
-    //     println!("region: {:x} - {:x}", mapping.base, mapping.ceiling);
-    //     for val in (mapping.base..mapping.ceiling)
-    //         .step_by(4)
-    //         .take(10)
-    //         .map(|start| {
-    //             read_memory(pid, start, 4).and_then(|v| {
-    //                 let mut c = Cursor::new(v);
-    //                 Ok(c.read_u32::<LittleEndian>().ok())
-    //             })
-    //         })
-    //         .filter_map(|v| v.ok())
-    //         .filter_map(|v| v)
-    //     {
-    //         println!(" {}", val);
-    //     }
-    // }
+
     Ok(())
 }

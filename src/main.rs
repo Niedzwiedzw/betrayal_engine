@@ -136,9 +136,16 @@ impl ProcessQuery {
     }
 
     pub fn update_results(&mut self) -> BetrayalResult<()> {
-        for result in self.results.iter_mut() {
+        let mut invalid_regions = vec![];
+        for (index, result) in self.results.iter_mut().enumerate() {
             let (address, _value) = result;
-            *result = Self::read_at(self.pid, *address)?;
+            match Self::read_at(self.pid, *address) {
+                Ok(val) => *result = val,
+                Err(_e) => invalid_regions.push(index),
+            }
+        }
+        for index in invalid_regions.into_iter().rev() {
+            self.results.remove(index);
         }
         Ok(())
     }
@@ -177,29 +184,36 @@ impl ProcessQuery {
         'process: 'result,
     {
         let pid = self.pid;
-        let mappings = std::mem::take(
+        let mut mappings = std::mem::take(
             procmaps::Mappings::from_pid(pid)
                 .map_err(|_e| BetrayalError::BadPid)?
                 .deref_mut(),
         );
-
+        mappings.retain(|m| m.perms.writable && m.perms.readable);
+        let scannable = mappings.len();
         Ok(Box::new(
             mappings
                 .into_iter()
                 // .flat_map(|map| (map.base..(map.ceiling - 3)))
-                .filter_map(
-                    move |map| match read_memory(pid, map.base, map.ceiling - map.base) {
+                .enumerate()
+                .filter_map(move |(index, map)| {
+                    println!("\r::{} / {} scanned   ", index, scannable);
+                    return match read_memory(pid, map.base, map.ceiling - map.base) {
                         Ok(memory) => Some((map, memory)),
                         Err(_e) => None,
-                    },
-                )
+                    };
+                })
                 .flat_map(|(map, memory)| {
-                    (0..(map.ceiling - map.base - 3)).filter_map(move |index| {
-                        match Cursor::new(&memory[index..index + 4]).read_i32::<NativeEndian>() {
-                            Ok(value) => Some((map.base + index, value)),
-                            Err(_e) => None,
-                        }
-                    })
+                    (0..(map.ceiling - map.base - 3))
+                        .par_bridge()
+                        .filter_map(move |index| {
+                            match Cursor::new(&memory[index..index + 4]).read_i32::<NativeEndian>()
+                            {
+                                Ok(value) => Some((map.base + index, value)),
+                                Err(_e) => None,
+                            }
+                        })
+                        .collect::<Vec<_>>()
                 }), // .filter_map(move |(map, memory)| Self::read_at(pid, address).ok())
         ))
     }

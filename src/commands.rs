@@ -39,6 +39,12 @@ fn command_parser(i: &str) -> BetrayalResult<Command> {
                     .parse()
                     .map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?,
             ),
+            &"u" => Filter::Any,
+            &"c" => Filter::ChangedBy(
+                value
+                    .parse()
+                    .map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?,
+            ),
             _ => return Err(BetrayalError::BadCommand(format!("command not found"))),
         })),
         _ => Err(BetrayalError::BadCommand(format!("command not found"))),

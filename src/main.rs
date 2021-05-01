@@ -93,25 +93,33 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
 }
 
 pub type QueryResult = (usize, i32);
-
+pub type CurrentQueryResults = Vec<QueryResult>;
 #[derive(Debug)]
 pub struct ProcessQuery {
     pub pid: i32,
-    pub results: Vec<QueryResult>,
+    pub results: CurrentQueryResults,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Filter {
     IsEqual(i32),
+    Any,
+    ChangedBy(i32),
 }
 
 pub type Writer = (u32, i32);
 
 impl Filter {
-    pub fn matches(self, result: QueryResult) -> bool {
-        let (_address, val) = result;
+    pub fn matches(self, result: QueryResult, current_results: &CurrentQueryResults) -> bool {
+        let (address, current_value) = result;
         match self {
-            Self::IsEqual(v) => v == val,
+            Self::IsEqual(v) => v == current_value,
+            Self::Any => true,
+            Self::ChangedBy(diff) => current_results
+                .iter()
+                .find(|(candidate_address, _value)| address == *candidate_address)
+                .and_then(|(_a, value)| Some(current_value + diff == *value))
+                .unwrap_or(false),
         }
     }
 }
@@ -168,18 +176,20 @@ impl ProcessQuery {
         self.update_results()?;
         Ok(())
     }
+
     pub fn perform_query(&mut self, filter: Filter) -> BetrayalResult<()> {
         if self.results.len() == 0 {
             let results = self
                 .query(filter)?
                 .into_par_iter()
-                .filter(|v| filter.matches(*v))
+                .filter(|v| filter.matches(*v, &self.results))
                 .collect::<Vec<_>>();
             self.results = results;
             return Ok(());
         }
+        let current_results = self.results.clone();
         self.update_results()?;
-        self.results.retain(|v| filter.matches(*v));
+        self.results.retain(|v| filter.matches(*v, &current_results));
 
         Ok(())
     }
@@ -214,6 +224,7 @@ impl ProcessQuery {
             .map(|(index, map)| {
                 let results = Arc::clone(&results);
                 std::thread::spawn(move || {
+                    let dummy_results = vec![]; // this should work for now cause this is only ran on the initial scan... I hope
                     let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base)
                     {
                         Ok(memory) => (0..(map.ceiling - map.base - 3))
@@ -225,7 +236,7 @@ impl ProcessQuery {
                                     Err(_e) => None,
                                 }
                             })
-                            .filter(|result| filter.matches(*result))
+                            .filter(|result| filter.matches(*result, &dummy_results))
                             .collect::<Vec<_>>(),
                         Err(_e) => {
                             vec![]
@@ -271,9 +282,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         }
-
-        for (index, (address, value)) in process.results.iter().enumerate() {
-            println!("{}. 0x{:x} -- {}", index, address, value);
+        if process.results.len() > 50 {
+            println!(":: found {} matches", process.results.len());
+        } else {
+            for (index, (address, value)) in process.results.iter().enumerate() {
+                println!("{}. 0x{:x} -- {}", index, address, value);
+            }
         }
     }
     println!("{:#?}", process);

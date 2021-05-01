@@ -1,53 +1,64 @@
-use crate::{BetrayalError, Writer};
 use crate::{error::BetrayalResult, Filter};
+use crate::{BetrayalError, Writer};
 use nom::{bytes::complete::take_while, error::ParseError, IResult};
 use std::str::FromStr;
-// take_input<T: FromStr>(prompt: &str) -> Result<T, <T as FromStr>::Err>
-
-// const KEYWORDS: [&str; 2] = ["f", "e"];
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum Command {
     PerformFilter(Filter),
     Write(Writer),
     Quit,
+    FindStructsReferencing(i32, usize),
+    Refresh,
+    Help,
 }
 
-// fn is_command_prefix(i: &str) -> bool {
-//     KEYWORDS.iter().any(|keyword| &i == keyword)
-// }
 
-// fn space<'a, E: ParseError<&'a str>>(i: &'a str) -> IResult<&'a str, &'a str, E> {
-//     take_while(move |c| c == ' ')(i)
-// }
+macro_rules! parse_or_bad_command {
+	  ($value:expr) => {
+		    $value.parse().map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?
+	  };
+}
+
+pub const HELP_TEXT: &str = r#"
+[ :: Betrayal Engine :: ]
+author: wojciech.brozek@niedzwiedz.it
+github: https://github.com/Niedzwiedzw/betratal_engine
+
+COMMANDS:
+""                       -> refreshes current results
+"q"                      -> quits the program
+"h" or "?" or "help"     -> prints this help message
+"s s <address> <depth>"  -> finds structs referencing that address and adds their fields to the results (BETA)
+"f u"                    -> a NO-OP filter, for new scans it will match all the values (very memory intensive), equivalent to refresh for subsequent scans
+"f e 2137"               -> finds values equal to 2137
+"f c 15"                 -> finds values that changed by 15 compared to previous scan (does nothing for initial scan)
+"#;
 
 fn command_parser(i: &str) -> BetrayalResult<Command> {
     let command = i.split_whitespace().collect::<Vec<_>>();
     match &command[..] {
+        [] => Ok(Command::Refresh),
+        ["h" | "?" | "help"] => Ok(Command::Help),
         ["q"] => Ok(Command::Quit),
         ["w", index, value] => Ok(Command::Write((
-            index
-                .parse()
-                .map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?,
-            value
-                .parse()
-                .map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?,
+            parse_or_bad_command!(index),
+            parse_or_bad_command!(value),
         ))),
-        ["f", compare, value] => Ok(Command::PerformFilter(match compare {
-            &"e" => Filter::IsEqual(
-                value
-                    .parse()
-                    .map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?,
+        ["s", "s", address, depth] => {
+            Ok(Command::FindStructsReferencing(parse_or_bad_command!(address), parse_or_bad_command!(depth)))
+        }
+        ["f", "u"] => Ok(Command::PerformFilter(Filter::Any)),
+        ["f", compare, value] => Ok(Command::PerformFilter(match *compare {
+            "e" => Filter::IsEqual(
+                parse_or_bad_command!(value)
             ),
-            &"u" => Filter::Any,
-            &"c" => Filter::ChangedBy(
-                value
-                    .parse()
-                    .map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?,
+            "c" => Filter::ChangedBy(
+                parse_or_bad_command!(value)
             ),
-            _ => return Err(BetrayalError::BadCommand(format!("command not found"))),
+            _ => return Err(BetrayalError::BadCommand("command not found".to_string())),
         })),
-        _ => Err(BetrayalError::BadCommand(format!("command not found"))),
+        _ => Err(BetrayalError::BadCommand("command not found".to_string())),
     }
 }
 
@@ -55,7 +66,6 @@ impl FromStr for Command {
     type Err = BetrayalError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Ok(command_parser(s).map_err(|e| BetrayalError::BadCommand(e.to_string()))?.1)
         command_parser(s)
     }
 }

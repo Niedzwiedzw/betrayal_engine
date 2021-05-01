@@ -2,8 +2,9 @@
 
 mod commands;
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use commands::Command;
+use commands::{Command, HELP_TEXT};
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::Write,
     path::Path,
@@ -25,7 +26,7 @@ use nix::{
 use rayon::prelude::*;
 
 use error::{BetrayalError, BetrayalResult};
-use procmaps;
+use procmaps::{self, Map};
 mod error;
 mod process;
 
@@ -35,7 +36,6 @@ pub fn take_input<T: FromStr>(prompt: &str) -> Result<T, <T as FromStr>::Err> {
     std::io::stdout().flush();
     std::io::stdin()
         .read_line(&mut input_string)
-        .ok()
         .expect("Failed to read line");
     T::from_str(input_string.trim())
 }
@@ -85,7 +85,7 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
                     bytes_written, bytes_requested
                 )));
             } else {
-                return Ok(());
+                Ok(())
             }
         }
         Err(e) => return Err(BetrayalError::BadWrite(format!("write error: {}", e))),
@@ -93,18 +93,20 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
 }
 
 pub type QueryResult = (usize, i32);
-pub type CurrentQueryResults = Vec<QueryResult>;
+pub type CurrentQueryResults = BTreeMap<usize, QueryResult>;
 #[derive(Debug)]
 pub struct ProcessQuery {
     pub pid: i32,
     pub results: CurrentQueryResults,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filter {
     IsEqual(i32),
+    InRange((i32, i32)),
     Any,
     ChangedBy(i32),
+    InAddressRanges(Vec<(usize, usize)>),
 }
 
 pub type Writer = (u32, i32);
@@ -114,12 +116,16 @@ impl Filter {
         let (address, current_value) = result;
         match self {
             Self::IsEqual(v) => v == current_value,
+            Self::InRange((base, ceiling)) => base <= current_value && current_value <= ceiling,
             Self::Any => true,
             Self::ChangedBy(diff) => current_results
-                .iter()
-                .find(|(candidate_address, _value)| address == *candidate_address)
-                .and_then(|(_a, value)| Some(current_value + diff == *value))
+                .get(&address)
+                // .find(|(candidate_address, _value)| address == *candidate_address)
+                .map(|(_a, value)| current_value + diff == *value)
                 .unwrap_or(false),
+            Self::InAddressRanges(ranges) => ranges
+                .iter()
+                .any(|(base, ceiling)| base <= &address && &address <= ceiling),
         }
     }
 }
@@ -128,7 +134,7 @@ impl ProcessQuery {
     pub fn new(pid: i32) -> Self {
         Self {
             pid,
-            results: vec![],
+            results: Default::default(),
         }
     }
 
@@ -153,43 +159,95 @@ impl ProcessQuery {
 
     pub fn update_results(&mut self) -> BetrayalResult<()> {
         let mut invalid_regions = vec![];
-        for (index, result) in self.results.iter_mut().enumerate() {
-            let (address, _value) = result;
-            match Self::read_at(self.pid, *address) {
-                Ok(val) => *result = val,
-                Err(_e) => invalid_regions.push(index),
+        {
+            for (address, result) in self.results.iter_mut() {
+                match Self::read_at(self.pid, *address) {
+                    Ok(val) => *result = val,
+                    Err(_e) => invalid_regions.push(*address),
+                }
             }
         }
         for index in invalid_regions.into_iter().rev() {
-            self.results.remove(index);
+            self.results.remove(&index);
         }
         Ok(())
     }
 
     pub fn perform_write(&mut self, writer: Writer) -> BetrayalResult<()> {
         let (index, value) = writer;
+        let (selected_address, _current_value) =
+            self.results
+                .iter()
+                .nth((index) as usize)
+                .ok_or(BetrayalError::BadWrite(
+                    "Address is no longer valid".to_string(),
+                ))?;
         let (address, _current_value) = self
             .results
-            .get(index as usize)
-            .ok_or(BetrayalError::BadWrite(format!("no such address")))?;
+            .get(selected_address)
+            .ok_or(BetrayalError::BadWrite("no such address".to_string()))?;
         Self::write_at(self.pid, *address, value)?;
         self.update_results()?;
         Ok(())
     }
 
+    pub fn perform_new_query(&mut self, filter: Filter) -> BetrayalResult<()> {
+        let results = self
+            .query(filter.clone())?
+            .into_par_iter()
+            .filter(|v| filter.clone().matches(*v, &self.results))
+            .map(|(address, value)| (address, (address, value)))
+            .collect();
+        self.results = results;
+        Ok(())
+    }
     pub fn perform_query(&mut self, filter: Filter) -> BetrayalResult<()> {
-        if self.results.len() == 0 {
-            let results = self
-                .query(filter)?
-                .into_par_iter()
-                .filter(|v| filter.matches(*v, &self.results))
-                .collect::<Vec<_>>();
-            self.results = results;
-            return Ok(());
+        if self.results.is_empty() {
+            self.perform_new_query(filter.clone())?;
         }
         let current_results = self.results.clone();
         self.update_results()?;
-        self.results.retain(|v| filter.matches(*v, &current_results));
+        self.results
+            .retain(|_k, v| filter.clone().matches(*v, &current_results));
+
+        Ok(())
+    }
+    fn mappings(&self) -> BetrayalResult<Vec<Map>> {
+        let pid = self.pid;
+        let mut mappings = std::mem::take(
+            procmaps::Mappings::from_pid(pid)
+                .map_err(|_e| BetrayalError::BadPid)?
+                .deref_mut(),
+        );
+
+        mappings.retain(|m| m.perms.writable && m.perms.readable);
+        Ok(mappings)
+    }
+    fn all_possible_addresses(&self) -> BetrayalResult<Box<impl Iterator<Item = i32>>> {
+        Ok(box self
+            .mappings()?
+            .into_iter()
+            .flat_map(|map| (map.base as i32)..((map.ceiling as i32) - 4)))
+    }
+    pub fn in_address_space(&self, value: i32) -> BetrayalResult<bool> {
+        Ok(self
+            .mappings()?
+            .into_iter()
+            .any(|map| map.base as i32 <= value && value <= map.ceiling as i32))
+    }
+
+    pub fn find_structs_referencing(&mut self, address: usize, depth: usize) -> BetrayalResult<()> {
+        if !self.in_address_space(address as i32)? {
+            println!(":: {} not in address space", address);
+            return Ok(());
+        }
+        let ranges = self
+            .query(Filter::InRange(((address - depth) as i32, address as i32)))?
+            .into_iter()
+            .map(|(address, _value)| (address - depth, address + depth / 2))
+            .collect::<Vec<_>>();
+        println!(":: found {} potential structs", ranges.len());
+        self.perform_new_query(Filter::InAddressRanges(ranges))?;
 
         Ok(())
     }
@@ -203,12 +261,7 @@ impl ProcessQuery {
         'process: 'result,
     {
         let pid = self.pid;
-        let mut mappings = std::mem::take(
-            procmaps::Mappings::from_pid(pid)
-                .map_err(|_e| BetrayalError::BadPid)?
-                .deref_mut(),
-        );
-        mappings.retain(|m| m.perms.writable && m.perms.readable);
+        let mappings = self.mappings()?;
         let mappings: Vec<_> = mappings
             .into_iter()
             .unique_by(|m| m.base)
@@ -223,8 +276,9 @@ impl ProcessQuery {
             .enumerate()
             .map(|(index, map)| {
                 let results = Arc::clone(&results);
+                let filter = filter.clone();
                 std::thread::spawn(move || {
-                    let dummy_results = vec![]; // this should work for now cause this is only ran on the initial scan... I hope
+                    let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
                     let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base)
                     {
                         Ok(memory) => (0..(map.ceiling - map.base - 3))
@@ -236,7 +290,7 @@ impl ProcessQuery {
                                     Err(_e) => None,
                                 }
                             })
-                            .filter(|result| filter.matches(*result, &dummy_results))
+                            .filter(|result| filter.clone().matches(*result, &dummy_results))
                             .collect::<Vec<_>>(),
                         Err(_e) => {
                             vec![]
@@ -261,7 +315,7 @@ impl ProcessQuery {
             );
         }
         let results = results.lock().expect("some thread crashed").clone();
-        return Ok(results);
+        Ok(results)
     }
 }
 
@@ -269,13 +323,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pid = take_input::<i32>("PID")?;
 
     let mut process = ProcessQuery::new(pid);
+    println!("{}", HELP_TEXT);
     loop {
         let input = take_input::<Command>("");
         match input {
             Ok(command) => match command {
                 Command::Quit => break,
+                Command::Help => {
+                    println!("{}", HELP_TEXT);
+                    continue;
+                },
+                Command::Refresh => process.update_results()?,
                 Command::PerformFilter(filter) => process.perform_query(filter)?,
                 Command::Write(writer) => process.perform_write(writer)?,
+                Command::FindStructsReferencing(address, depth) => {
+                    process.find_structs_referencing(address as usize, depth)?
+                }
             },
             Err(e) => {
                 eprintln!("{}", e);
@@ -285,8 +348,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if process.results.len() > 50 {
             println!(":: found {} matches", process.results.len());
         } else {
-            for (index, (address, value)) in process.results.iter().enumerate() {
-                println!("{}. 0x{:x} -- {}", index, address, value);
+            for (index, (_, (address, value))) in process.results.iter().enumerate() {
+                println!("{}. 0x{:x} ({}) -- {}", index, address, address, value);
             }
         }
     }

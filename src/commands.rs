@@ -6,6 +6,7 @@ use std::str::FromStr;
 #[derive(PartialEq, Eq, Debug)]
 pub enum Command {
     PerformFilter(Filter),
+    KeepWriting(Writer),
     Write(Writer),
     Quit,
     FindStructsReferencing(i32, usize),
@@ -29,6 +30,9 @@ COMMANDS:
 ""                       -> refreshes current results
 "q"                      -> quits the program
 "h" or "?" or "help"     -> prints this help message
+"w <index> <value>"      -> writes a specified value to address at results
+
+"k <index> <value>"      -> same as "w" but does that in a loop so that value stays the same (god mode etc)
 "s s <address> <depth>"  -> finds structs referencing that address and adds their fields to the results (BETA)
 "f u"                    -> a NO-OP filter, for new scans it will match all the values (very memory intensive), equivalent to refresh for subsequent scans
 "f e 2137"               -> finds values equal to 2137
@@ -45,9 +49,14 @@ fn command_parser(i: &str) -> BetrayalResult<Command> {
             parse_or_bad_command!(index),
             parse_or_bad_command!(value),
         ))),
+
+        ["k", index, value] => Ok(Command::KeepWriting((
+            parse_or_bad_command!(index),
+            parse_or_bad_command!(value),
+        ))),
         ["s", "s", address, depth] => {
             Ok(Command::FindStructsReferencing(parse_or_bad_command!(address), parse_or_bad_command!(depth)))
-        }
+        },
         ["f", "u"] => Ok(Command::PerformFilter(Filter::Any)),
         ["f", compare, value] => Ok(Command::PerformFilter(match *compare {
             "e" => Filter::IsEqual(

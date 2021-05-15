@@ -3,14 +3,8 @@
 mod commands;
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 use commands::{Command, HELP_TEXT};
-use std::{
-    collections::BTreeMap,
-    fs::File,
-    io::Write,
-    path::Path,
-    str::FromStr,
-    sync::{Arc, Mutex},
-};
+use parking_lot::Mutex;
+use std::{collections::BTreeMap, fs::File, io::Write, path::Path, str::FromStr, sync::Arc};
 use std::{
     io::{self, BufRead, Read},
     ops::DerefMut,
@@ -296,10 +290,7 @@ impl ProcessQuery {
                             vec![]
                         }
                     };
-                    results
-                        .lock()
-                        .expect("a previous thread crashed while accessing mutex...")
-                        .append(&mut results_chunk);
+                    results.lock().append(&mut results_chunk);
                     index
                 })
             })
@@ -314,7 +305,7 @@ impl ProcessQuery {
                 scannable
             );
         }
-        let results = results.lock().expect("some thread crashed").clone();
+        let results = results.lock().clone();
         Ok(results)
     }
 }
@@ -322,9 +313,12 @@ impl ProcessQuery {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pid = take_input::<i32>("PID")?;
 
-    let mut process = ProcessQuery::new(pid);
+    let process = ProcessQuery::new(pid);
+    let process = Arc::new(Mutex::new(process));
     println!("{}", HELP_TEXT);
+    let mut tasks = vec![];
     loop {
+        let process = Arc::clone(&process);
         let input = take_input::<Command>("");
         match input {
             Ok(command) => match command {
@@ -332,23 +326,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Command::Help => {
                     println!("{}", HELP_TEXT);
                     continue;
-                },
-                Command::Refresh => process.update_results()?,
-                Command::PerformFilter(filter) => process.perform_query(filter)?,
-                Command::Write(writer) => process.perform_write(writer)?,
+                }
+                Command::Refresh => process.lock().update_results()?,
+                Command::PerformFilter(filter) => process.lock().perform_query(filter)?,
+                Command::Write(writer) => process.lock().perform_write(writer)?,
                 Command::FindStructsReferencing(address, depth) => {
-                    process.find_structs_referencing(address as usize, depth)?
+                    process
+                        .lock()
+                        .find_structs_referencing(address as usize, depth)?;
+                }
+
+                Command::KeepWriting(writer) => {
+                    let process = Arc::clone(&process);
+                    tasks.push(std::thread::spawn(move || loop {
+                        match process.lock().perform_write(writer) {
+                            Ok(_) => {}
+                            Err(e) => {
+                                eprintln!(
+                                    " :: [ERR] :: Writer thread crashed with {}. Aborting.",
+                                    e
+                                );
+                                break;
+                            }
+                        };
+
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }));
                 }
             },
             Err(e) => {
                 eprintln!("{}", e);
                 continue;
             }
-        }
-        if process.results.len() > 50 {
-            println!(":: found {} matches", process.results.len());
+        };
+        if process.lock().results.len() > 50 {
+            println!(":: found {} matches", process.lock().results.len());
         } else {
-            for (index, (_, (address, value))) in process.results.iter().enumerate() {
+            for (index, (_, (address, value))) in process.lock().results.iter().enumerate() {
                 println!("{}. 0x{:x} ({}) -- {}", index, address, address, value);
             }
         }

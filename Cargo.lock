@@ -35,6 +35,7 @@ dependencies = [
  "itertools",
  "nix",
  "nom 6.1.2",
+ "parking_lot",
  "procfs",
  "procmaps",
  "rayon",

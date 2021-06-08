@@ -312,7 +312,7 @@ impl ProcessQuery {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pid = take_input::<i32>("PID")?;
-
+    println!("PID: {}", pid);
     let process = ProcessQuery::new(pid);
     let process = Arc::new(Mutex::new(process));
     println!("{}", HELP_TEXT);

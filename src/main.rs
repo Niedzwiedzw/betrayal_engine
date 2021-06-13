@@ -1,8 +1,13 @@
 #![feature(box_syntax)]
 
 mod commands;
+mod helpers;
+mod memory;
+mod neighbour_values;
+
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 use commands::{Command, HELP_TEXT};
+use neighbour_values::NeighbourValuesQuery;
 use parking_lot::Mutex;
 use std::{collections::BTreeMap, fs::File, io::Write, path::Path, str::FromStr, sync::Arc};
 use std::{
@@ -21,6 +26,8 @@ use rayon::prelude::*;
 
 use error::{BetrayalError, BetrayalResult};
 use procmaps::{self, Map};
+
+use crate::neighbour_values::NeighbourValues;
 mod error;
 mod process;
 
@@ -86,8 +93,9 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
     }
 }
 
-pub type QueryResult = (usize, i32);
-pub type CurrentQueryResults = BTreeMap<usize, QueryResult>;
+pub type AddressValue = (usize, i32);
+
+pub type CurrentQueryResults = BTreeMap<usize, AddressValue>;
 #[derive(Debug)]
 pub struct ProcessQuery {
     pub pid: i32,
@@ -103,10 +111,10 @@ pub enum Filter {
     InAddressRanges(Vec<(usize, usize)>),
 }
 
-pub type Writer = (u32, i32);
+pub type Writer = (usize, i32);
 
 impl Filter {
-    pub fn matches(self, result: QueryResult, current_results: &CurrentQueryResults) -> bool {
+    pub fn matches(self, result: AddressValue, current_results: &CurrentQueryResults) -> bool {
         let (address, current_value) = result;
         match self {
             Self::IsEqual(v) => v == current_value,
@@ -132,7 +140,7 @@ impl ProcessQuery {
         }
     }
 
-    fn read_at(pid: i32, address: usize) -> BetrayalResult<QueryResult> {
+    fn read_at(pid: i32, address: usize) -> BetrayalResult<AddressValue> {
         let val = read_memory(pid, address, 4)?;
         let mut c = Cursor::new(val);
         Ok((
@@ -168,17 +176,10 @@ impl ProcessQuery {
     }
 
     pub fn perform_write(&mut self, writer: Writer) -> BetrayalResult<()> {
-        let (index, value) = writer;
-        let (selected_address, _current_value) =
-            self.results
-                .iter()
-                .nth((index) as usize)
-                .ok_or(BetrayalError::BadWrite(
-                    "Address is no longer valid".to_string(),
-                ))?;
+        let (selected_address, value) = writer;
         let (address, _current_value) = self
             .results
-            .get(selected_address)
+            .get(&selected_address)
             .ok_or(BetrayalError::BadWrite("no such address".to_string()))?;
         Self::write_at(self.pid, *address, value)?;
         self.update_results()?;
@@ -230,27 +231,11 @@ impl ProcessQuery {
             .any(|map| map.base as i32 <= value && value <= map.ceiling as i32))
     }
 
-    pub fn find_structs_referencing(&mut self, address: usize, depth: usize) -> BetrayalResult<()> {
-        if !self.in_address_space(address as i32)? {
-            println!(":: {} not in address space", address);
-            return Ok(());
-        }
-        let ranges = self
-            .query(Filter::InRange(((address - depth) as i32, address as i32)))?
-            .into_iter()
-            .map(|(address, _value)| (address - depth, address + depth / 2))
-            .collect::<Vec<_>>();
-        println!(":: found {} potential structs", ranges.len());
-        self.perform_new_query(Filter::InAddressRanges(ranges))?;
-
-        Ok(())
-    }
-
     fn query<'process, 'result>(
         &'process self,
         filter: Filter,
         // ) -> BetrayalResult<Box<impl Iterator<Item = QueryResult> + 'result>>
-    ) -> BetrayalResult<Vec<QueryResult>>
+    ) -> BetrayalResult<Vec<AddressValue>>
     where
         'process: 'result,
     {
@@ -264,7 +249,7 @@ impl ProcessQuery {
         let scannable = mappings.len();
         let mut left_to_scan = scannable;
 
-        let results: Arc<Mutex<Vec<QueryResult>>> = Default::default();
+        let results: Arc<Mutex<Vec<AddressValue>>> = Default::default();
         let tasks: Vec<std::thread::JoinHandle<_>> = mappings
             .into_iter()
             .enumerate()
@@ -275,17 +260,84 @@ impl ProcessQuery {
                     let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
                     let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base)
                     {
-                        Ok(memory) => (0..(map.ceiling - map.base - 3))
-                            .filter_map(move |index| {
-                                match Cursor::new(&memory[index..index + 4])
-                                    .read_i32::<NativeEndian>()
-                                {
-                                    Ok(value) => Some((map.base + index, value)),
-                                    Err(_e) => None,
-                                }
-                            })
+                        Ok(m) => memory::possible_i32_values(&m[..], map.base)
                             .filter(|result| filter.clone().matches(*result, &dummy_results))
-                            .collect::<Vec<_>>(),
+                            .collect(),
+                        Err(_e) => {
+                            vec![]
+                        }
+                    };
+                    results.lock().append(&mut results_chunk);
+                    index
+                })
+            })
+            .collect();
+
+        for task in tasks {
+            let _index = task.join();
+            left_to_scan -= 1;
+            print!(
+                "\r :: {} / {} regions scanned     ",
+                scannable - left_to_scan,
+                scannable
+            );
+        }
+        let results = results.lock().clone();
+        Ok(results)
+    }
+
+    pub fn find_neighbour_values(
+        &self,
+        NeighbourValuesQuery {
+            values,
+            window_size,
+        }: NeighbourValuesQuery,
+    ) -> BetrayalResult<Vec<NeighbourValues>> {
+        let pid = self.pid;
+        let mappings = self.mappings()?;
+        let mappings: Vec<_> = mappings
+            .into_iter()
+            .unique_by(|m| m.base)
+            .unique_by(|m| m.ceiling)
+            .collect();
+        let scannable = mappings.len();
+        let mut left_to_scan = scannable;
+        let results: Arc<Mutex<Vec<NeighbourValues>>> = Default::default();
+        let tasks: Vec<_> = mappings
+            .into_iter()
+            .enumerate()
+            .map(|(index, map)| {
+                let results = Arc::clone(&results);
+                let window_size = window_size.clone();
+                let pid = pid.clone();
+                let values = values.clone();
+                std::thread::spawn(move || {
+                    // let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
+                    let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base)
+                    {
+                        Ok(m) => memory::possible_i32_values(&m[..], map.base)
+                            .enumerate()
+                            .map(|(i, v)| (i % std::mem::size_of::<i32>(), v))
+                            .sorted_by_key(|(phase, _v)| *phase)
+                            .group_by(|(phase, _v)| *phase)
+                            .into_iter()
+                            .filter_map(|(_, phase)| {
+                                let phase = phase.into_iter().map(|(_, v)| v).collect();
+                                let next = helpers::windowed(&phase, window_size)
+                                    .filter(|window| {
+                                        values.iter().all(|v| {
+                                            window.iter().any(|(_, memory_value)| memory_value == v)
+                                        })
+                                    })
+                                    .map(|v| v.iter().cloned().collect())
+                                    .next();
+                                next
+                            })
+                            .map(|values| NeighbourValues {
+                                window_size,
+                                values,
+                            })
+                            .collect(),
                         Err(_e) => {
                             vec![]
                         }
@@ -326,16 +378,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Command::Help => {
                     println!("{}", HELP_TEXT);
                     continue;
-                }
+                },
+
+
                 Command::Refresh => process.lock().update_results()?,
                 Command::PerformFilter(filter) => process.lock().perform_query(filter)?,
                 Command::Write(writer) => process.lock().perform_write(writer)?,
-                Command::FindStructsReferencing(address, depth) => {
-                    process
-                        .lock()
-                        .find_structs_referencing(address as usize, depth)?;
-                }
-
                 Command::KeepWriting(writer) => {
                     let process = Arc::clone(&process);
                     tasks.push(std::thread::spawn(move || loop {
@@ -353,6 +401,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::thread::sleep(std::time::Duration::from_millis(50));
                     }));
                 }
+                Command::FindNeighbourValues(query) => {
+                    let mut process = process.lock();
+                    let results = process.find_neighbour_values(query)?;
+                    println!(" :: NEIGHBOUR VALUES ::");
+                    for result in results {
+                        println!("{:#?}", result);
+                    }
+
+                }
+                Command::AddAddress(address) => {
+                    let mut process = process.lock();
+                    process.results.insert(address, (address, 0));
+                    process.update_results()?;
+                },
+                Command::AddAddressRange(start, end) => {
+                    println!(" :: adding {} - {}", start ,end);
+                    let mut process = process.lock();
+                    for address in start..end {
+                        process.results.insert(address, (address, 0));
+                    }
+                    process.update_results()?;
+                }
             },
             Err(e) => {
                 eprintln!("{}", e);
@@ -363,7 +433,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!(":: found {} matches", process.lock().results.len());
         } else {
             for (index, (_, (address, value))) in process.lock().results.iter().enumerate() {
-                println!("{}. 0x{:x} ({}) -- {}", index, address, address, value);
+                println!("{}. {} (0x{:x}) -- {}", index, address, address, value);
             }
         }
     }

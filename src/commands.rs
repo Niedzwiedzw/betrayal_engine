@@ -1,6 +1,5 @@
 use crate::{error::BetrayalResult, Filter};
 use crate::{BetrayalError, Writer};
-use nom::{bytes::complete::take_while, error::ParseError, IResult};
 use std::str::FromStr;
 
 #[derive(PartialEq, Eq, Debug)]
@@ -8,17 +7,20 @@ pub enum Command {
     PerformFilter(Filter),
     KeepWriting(Writer),
     Write(Writer),
+    FindNeighbourValues(crate::neighbour_values::NeighbourValuesQuery),
     Quit,
-    FindStructsReferencing(i32, usize),
     Refresh,
     Help,
+    AddAddress(usize),
+    AddAddressRange(usize, usize),
 }
 
-
 macro_rules! parse_or_bad_command {
-	  ($value:expr) => {
-		    $value.parse().map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?
-	  };
+    ($value:expr) => {
+        $value
+            .parse()
+            .map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?
+    };
 }
 
 pub const HELP_TEXT: &str = r#"
@@ -28,12 +30,12 @@ github: https://github.com/Niedzwiedzw/betratal_engine
 
 COMMANDS:
 ""                       -> refreshes current results
+"a <address> <address?>  -> adds address to the list (or range of addresses if second argument is present)
 "q"                      -> quits the program
 "h" or "?" or "help"     -> prints this help message
 "w <index> <value>"      -> writes a specified value to address at results
-
+"n <window_size> 1 2 14" -> lists all possible windows of <window_size> that contain 1 2 and 14 in no specific order, useful for finding structs
 "k <index> <value>"      -> same as "w" but does that in a loop so that value stays the same (god mode etc)
-"s s <address> <depth>"  -> finds structs referencing that address and adds their fields to the results (BETA)
 "f u"                    -> a NO-OP filter, for new scans it will match all the values (very memory intensive), equivalent to refresh for subsequent scans
 "f e 2137"               -> finds values equal to 2137
 "f c 15"                 -> finds values that changed by 15 compared to previous scan (does nothing for initial scan)
@@ -49,22 +51,26 @@ fn command_parser(i: &str) -> BetrayalResult<Command> {
             parse_or_bad_command!(index),
             parse_or_bad_command!(value),
         ))),
-
+        ["a", address] => Ok(Command::AddAddress(parse_or_bad_command!(address))),
+        ["a", address_start, address_end] => Ok(Command::AddAddressRange(parse_or_bad_command!(address_start), parse_or_bad_command!(address_end))),
+        ["n", window_size, ref values_ @ ..] => Ok(Command::FindNeighbourValues({
+            let mut values = vec![];
+            for v in values_ {
+                values.push(parse_or_bad_command!(v));
+            }
+            crate::neighbour_values::NeighbourValuesQuery {
+                values,
+                window_size: parse_or_bad_command!(window_size),
+            }
+        })),
         ["k", index, value] => Ok(Command::KeepWriting((
             parse_or_bad_command!(index),
             parse_or_bad_command!(value),
         ))),
-        ["s", "s", address, depth] => {
-            Ok(Command::FindStructsReferencing(parse_or_bad_command!(address), parse_or_bad_command!(depth)))
-        },
         ["f", "u"] => Ok(Command::PerformFilter(Filter::Any)),
         ["f", compare, value] => Ok(Command::PerformFilter(match *compare {
-            "e" => Filter::IsEqual(
-                parse_or_bad_command!(value)
-            ),
-            "c" => Filter::ChangedBy(
-                parse_or_bad_command!(value)
-            ),
+            "e" => Filter::IsEqual(parse_or_bad_command!(value)),
+            "c" => Filter::ChangedBy(parse_or_bad_command!(value)),
             _ => return Err(BetrayalError::BadCommand("command not found".to_string())),
         })),
         _ => Err(BetrayalError::BadCommand("command not found".to_string())),

@@ -7,15 +7,15 @@ mod neighbour_values;
 
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
 use commands::{Command, HELP_TEXT};
+use itertools::Itertools;
 use neighbour_values::NeighbourValuesQuery;
 use parking_lot::Mutex;
+use rayon::prelude::*;
 use std::{collections::BTreeMap, fs::File, io::Write, path::Path, str::FromStr, sync::Arc};
 use std::{
     io::{self, BufRead, Read},
     ops::DerefMut,
 };
-
-use itertools::Itertools;
 
 use io::Cursor;
 use nix::{
@@ -246,42 +246,24 @@ impl ProcessQuery {
             .unique_by(|m| m.base)
             .unique_by(|m| m.ceiling)
             .collect();
-        let scannable = mappings.len();
-        let mut left_to_scan = scannable;
 
         let results: Arc<Mutex<Vec<AddressValue>>> = Default::default();
-        let tasks: Vec<std::thread::JoinHandle<_>> = mappings
-            .into_iter()
-            .enumerate()
-            .map(|(index, map)| {
-                let results = Arc::clone(&results);
-                let filter = filter.clone();
-                std::thread::spawn(move || {
-                    let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
-                    let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base)
-                    {
-                        Ok(m) => memory::possible_i32_values(&m[..], map.base)
-                            .filter(|result| filter.clone().matches(*result, &dummy_results))
-                            .collect(),
-                        Err(_e) => {
-                            vec![]
-                        }
-                    };
-                    results.lock().append(&mut results_chunk);
-                    index
-                })
-            })
-            .collect();
+        mappings.into_par_iter().for_each(|map| {
+            let results = Arc::clone(&results);
+            let filter = filter.clone();
+            let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
+            let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base) {
+                Ok(m) => memory::possible_i32_values(&m[..], map.base)
+                    .filter(|result| filter.clone().matches(*result, &dummy_results))
+                    .collect(),
+                Err(_e) => {
+                    vec![]
+                }
+            };
+            results.lock().append(&mut results_chunk);
+        });
 
-        for task in tasks {
-            let _index = task.join();
-            left_to_scan -= 1;
-            print!(
-                "\r :: {} / {} regions scanned     ",
-                scannable - left_to_scan,
-                scannable
-            );
-        }
+        println!(" :: scanning done ::");
         let results = results.lock().clone();
         Ok(results)
     }
@@ -300,69 +282,53 @@ impl ProcessQuery {
             .unique_by(|m| m.base)
             .unique_by(|m| m.ceiling)
             .collect();
-        let scannable = mappings.len();
-        let mut left_to_scan = scannable;
         let results: Arc<Mutex<Vec<NeighbourValues>>> = Default::default();
-        let tasks: Vec<_> = mappings
-            .into_iter()
-            .enumerate()
-            .map(|(index, map)| {
-                let results = Arc::clone(&results);
-                let window_size = window_size.clone();
-                let pid = pid.clone();
-                let values = values.clone();
-                std::thread::spawn(move || {
-                    // let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
-                    let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base)
-                    {
-                        Ok(m) => memory::possible_i32_values(&m[..], map.base)
-                            .enumerate()
-                            .map(|(i, v)| (i % std::mem::size_of::<i32>(), v))
-                            .sorted_by_key(|(phase, _v)| *phase)
-                            .group_by(|(phase, _v)| *phase)
-                            .into_iter()
-                            .filter_map(|(_, phase)| {
-                                let phase = phase.into_iter().map(|(_, v)| v).collect();
-                                let next = helpers::windowed(&phase, window_size)
-                                    .filter(|window| {
-                                        values.iter().all(|v| {
-                                            window.iter().any(|(_, memory_value)| memory_value == v)
-                                        })
-                                    })
-                                    .map(|v| v.iter().cloned().collect())
-                                    .next();
-                                next
+        mappings.into_par_iter().for_each(|map| {
+            let results = Arc::clone(&results);
+            let window_size = window_size.clone();
+            let pid = pid.clone();
+            let values = values.clone();
+            // let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
+            let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base) {
+                Ok(m) => memory::possible_i32_values(&m[..], map.base)
+                    .enumerate()
+                    .map(|(i, v)| (i % std::mem::size_of::<i32>(), v))
+                    .sorted_by_key(|(phase, _v)| *phase)
+                    .group_by(|(phase, _v)| *phase)
+                    .into_iter()
+                    .filter_map(|(_, phase)| {
+                        let phase = phase.into_iter().map(|(_, v)| v).collect();
+                        let next = helpers::windowed(&phase, window_size)
+                            .filter(|window| {
+                                values.iter().all(|v| {
+                                    window.iter().any(|(_, memory_value)| memory_value == v)
+                                })
                             })
-                            .map(|values| NeighbourValues {
-                                window_size,
-                                values,
-                            })
-                            .collect(),
-                        Err(_e) => {
-                            vec![]
-                        }
-                    };
-                    results.lock().append(&mut results_chunk);
-                    index
-                })
-            })
-            .collect();
+                            .map(|v| v.iter().cloned().collect())
+                            .next();
+                        next
+                    })
+                    .map(|values| NeighbourValues {
+                        window_size,
+                        values,
+                    })
+                    .collect(),
+                Err(_e) => {
+                    vec![]
+                }
+            };
+            results.lock().append(&mut results_chunk);
+            // index
+        });
 
-        for task in tasks {
-            let _index = task.join();
-            left_to_scan -= 1;
-            print!(
-                "\r :: {} / {} regions scanned     ",
-                scannable - left_to_scan,
-                scannable
-            );
-        }
+        println!(" :: scanning done ::");
         let results = results.lock().clone();
         Ok(results)
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pid = take_input::<i32>("PID")?;
     println!("PID: {}", pid);
     let process = ProcessQuery::new(pid);
@@ -378,8 +344,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Command::Help => {
                     println!("{}", HELP_TEXT);
                     continue;
-                },
-
+                }
 
                 Command::Refresh => process.lock().update_results()?,
                 Command::PerformFilter(filter) => process.lock().perform_query(filter)?,
@@ -402,21 +367,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }));
                 }
                 Command::FindNeighbourValues(query) => {
-                    let mut process = process.lock();
+                    let process = process.lock();
                     let results = process.find_neighbour_values(query)?;
                     println!(" :: NEIGHBOUR VALUES ::");
                     for result in results {
                         println!("{:#?}", result);
                     }
-
                 }
                 Command::AddAddress(address) => {
                     let mut process = process.lock();
                     process.results.insert(address, (address, 0));
                     process.update_results()?;
-                },
+                }
                 Command::AddAddressRange(start, end) => {
-                    println!(" :: adding {} - {}", start ,end);
+                    println!(" :: adding {} - {}", start, end);
                     let mut process = process.lock();
                     for address in start..end {
                         process.results.insert(address, (address, 0));

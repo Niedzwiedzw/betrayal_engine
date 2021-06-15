@@ -39,6 +39,7 @@ COMMANDS:
 "f u"                    -> a NO-OP filter, for new scans it will match all the values (very memory intensive), equivalent to refresh for subsequent scans
 "f e 2137"               -> finds values equal to 2137
 "f c 15"                 -> finds values that changed by 15 compared to previous scan (does nothing for initial scan)
+"f r 15 300"             -> finds values between 15 and 300
 "#;
 
 fn command_parser(i: &str) -> BetrayalResult<Command> {
@@ -52,7 +53,10 @@ fn command_parser(i: &str) -> BetrayalResult<Command> {
             parse_or_bad_command!(value),
         ))),
         ["a", address] => Ok(Command::AddAddress(parse_or_bad_command!(address))),
-        ["a", address_start, address_end] => Ok(Command::AddAddressRange(parse_or_bad_command!(address_start), parse_or_bad_command!(address_end))),
+        ["a", address_start, address_end] => Ok(Command::AddAddressRange(
+            parse_or_bad_command!(address_start),
+            parse_or_bad_command!(address_end),
+        )),
         ["n", window_size, ref values_ @ ..] => Ok(Command::FindNeighbourValues({
             let mut values = vec![];
             for v in values_ {
@@ -73,6 +77,10 @@ fn command_parser(i: &str) -> BetrayalResult<Command> {
             "c" => Filter::ChangedBy(parse_or_bad_command!(value)),
             _ => return Err(BetrayalError::BadCommand("command not found".to_string())),
         })),
+        ["f", "r", start, end] => Ok(Command::PerformFilter(Filter::InRange((
+            parse_or_bad_command!(start),
+            parse_or_bad_command!(end),
+        )))),
         _ => Err(BetrayalError::BadCommand("command not found".to_string())),
     }
 }

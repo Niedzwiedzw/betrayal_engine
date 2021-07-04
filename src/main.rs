@@ -93,9 +93,10 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
     }
 }
 
-pub type AddressValue = (usize, i32);
+pub type AddressValue<T> = (usize, T);
 
-pub type CurrentQueryResults = BTreeMap<usize, AddressValue>;
+pub type CurrentQueryResults = BTreeMap<usize, AddressValue<i32>>;
+
 #[derive(Debug)]
 pub struct ProcessQuery {
     pub pid: i32,
@@ -114,7 +115,7 @@ pub enum Filter {
 pub type Writer = (usize, i32);
 
 impl Filter {
-    pub fn matches(self, result: AddressValue, current_results: &CurrentQueryResults) -> bool {
+    pub fn matches(self, result: AddressValue<i32>, current_results: &CurrentQueryResults) -> bool {
         let (address, current_value) = result;
         match self {
             Self::IsEqual(v) => v == current_value,
@@ -140,8 +141,8 @@ impl ProcessQuery {
         }
     }
 
-    fn read_at(pid: i32, address: usize) -> BetrayalResult<AddressValue> {
-        let val = read_memory(pid, address, 4)?;
+    fn read_at(pid: i32, address: usize) -> BetrayalResult<AddressValue<i32>> {
+        let val = read_memory(pid, address, std::mem::size_of::<i32>())?;
         let mut c = Cursor::new(val);
         Ok((
             address,
@@ -222,7 +223,7 @@ impl ProcessQuery {
         Ok(box self
             .mappings()?
             .into_iter()
-            .flat_map(|map| (map.base as i32)..((map.ceiling as i32) - 4)))
+            .flat_map(|map| (map.base as i32)..((map.ceiling as i32) - std::mem::size_of::<i32>() as i32)))
     }
     pub fn in_address_space(&self, value: i32) -> BetrayalResult<bool> {
         Ok(self
@@ -235,7 +236,7 @@ impl ProcessQuery {
         &'process self,
         filter: Filter,
         // ) -> BetrayalResult<Box<impl Iterator<Item = QueryResult> + 'result>>
-    ) -> BetrayalResult<Vec<AddressValue>>
+    ) -> BetrayalResult<Vec<AddressValue<i32>>>
     where
         'process: 'result,
     {
@@ -247,13 +248,13 @@ impl ProcessQuery {
             .unique_by(|m| m.ceiling)
             .collect();
 
-        let results: Arc<Mutex<Vec<AddressValue>>> = Default::default();
+        let results: Arc<Mutex<Vec<AddressValue<i32>>>> = Default::default();
         mappings.into_par_iter().for_each(|map| {
             let results = Arc::clone(&results);
             let filter = filter.clone();
             let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
             let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base) {
-                Ok(m) => memory::possible_i32_values(&m[..], map.base)
+                Ok(m) => memory::possible_values_i32(&m[..], map.base)
                     .filter(|result| filter.clone().matches(*result, &dummy_results))
                     .collect(),
                 Err(_e) => {
@@ -262,6 +263,7 @@ impl ProcessQuery {
             };
             results.lock().append(&mut results_chunk);
         });
+
 
         println!(" :: scanning done ::");
         let results = results.lock().clone();
@@ -290,7 +292,7 @@ impl ProcessQuery {
             let values = values.clone();
             // let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
             let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base) {
-                Ok(m) => memory::possible_i32_values(&m[..], map.base)
+                Ok(m) => memory::possible_values_i32(&m[..], map.base)
                     .enumerate()
                     .map(|(i, v)| (i % std::mem::size_of::<i32>(), v))
                     .sorted_by_key(|(phase, _v)| *phase)

@@ -9,5 +9,5 @@ pub struct NeighbourValuesQuery {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NeighbourValues {
     pub window_size: usize,
-    pub values: Vec<AddressValue>,
+    pub values: Vec<AddressValue<i32>>,
 }

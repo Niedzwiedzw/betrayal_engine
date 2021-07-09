@@ -438,7 +438,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arg::new("variable_type")
                 .short('t')
                 .long("variable_type")
-                .value_name("i32 (default) | i16 | u8")
+                .value_name("i32 | i16 | u8 | f32 | f64")
                 .default_value("i32")
                 .about("currently you need to specify the format up front and only use that until the end of the program. but hey, you can always run multiple instances of this thing. oh yeah and i32 is 32 bits signed, equivalent of 4 bytes in other software"),
         )
@@ -452,6 +452,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "i32" => run::<i32>(pid, &mut tasks).await?,
             "i16" => run::<i16>(pid, &mut tasks).await?,
             "u8" => run::<u8>(pid, &mut tasks).await?,
+            "f32" => run::<f32>(pid, &mut tasks).await?,
+            "f64" => run::<f64>(pid, &mut tasks).await?,
             _ => panic!("unsupported variable type")
         },
         None => {

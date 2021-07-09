@@ -14,8 +14,6 @@ pub trait ReadFromBytes:
     + Sized
     + FromStr
     + Clone
-    + Ord
-    + Eq
     + PartialEq
     + PartialOrd
     + Add<Output = Self>
@@ -95,3 +93,5 @@ macro_rules! read_from_bytes_impl {
 
 read_from_bytes_impl!(i32, read_i32, write_i32);
 read_from_bytes_impl!(i16, read_i16, write_i16);
+read_from_bytes_impl!(f32, read_f32, write_f32);
+read_from_bytes_impl!(f64, read_f64, write_f64);

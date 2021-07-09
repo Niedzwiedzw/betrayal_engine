@@ -1,38 +1,97 @@
-#![feature(concat_idents)]
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use std::io::Cursor;
+use std::ops::{Add, Sub};
+use std::{
+    io::{Cursor, Read, Write},
+    str::FromStr,
+};
 
-macro_rules! register_reader {
-	  ($name:ident, $type:ty, $method:ident) => {
-		    pub fn $name<'a>(
-            memory: &'a [u8],
-            base: usize,
-        ) -> impl Iterator<Item = crate::AddressValue<$type>> + 'a {
-            Box::new((0..(memory.len() - 3)).filter_map(move |start| {
-                Some((
-                    base + start,
-                    Cursor::new(&memory[start..start + std::mem::size_of::<$type>()])
-                        .$method::<NativeEndian>()
-                        .ok()?,
-                ))
-            }))
-        }
-	  };
+use std::cmp::{Eq, Ord, PartialEq, PartialOrd};
+
+pub trait ReadFromBytes:
+    Default
+    + std::fmt::Display
+    + std::fmt::Debug
+    + Sized
+    + FromStr
+    + Clone
+    + Ord
+    + Eq
+    + PartialEq
+    + PartialOrd
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Copy
+    + Sync
+    + Send
+{
+    fn possible_values<'a>(
+        reader: &'a [u8],
+        base: usize,
+    ) -> Box<dyn Iterator<Item = crate::AddressValue<Self>> + 'a>;
+
+    fn read_value(val: Vec<u8>) -> std::io::Result<Self>;
+    fn write_bytes<W: Write>(&self, writer: &mut W) -> std::io::Result<()>;
 }
 
-// pub fn possible_values_i32<'a>(
-//     memory: &'a [u8],
-//     base: usize,
-// ) -> impl Iterator<Item = crate::AddressValue> + 'a {
-//     Box::new((0..(memory.len() - 3)).filter_map(move |start| {
-//         Some((
-//             base + start,
-//             Cursor::new(&memory[start..start + std::mem::size_of::<i32>()])
-//                 .read_i32::<NativeEndian>()
-//                 .ok()?,
-//         ))
-//     }))
-// }
+impl ReadFromBytes for u8 {
+    fn possible_values<'a>(
+        memory: &'a [u8],
+        base: usize,
+    ) -> Box<dyn Iterator<Item = crate::AddressValue<Self>> + 'a> {
+        Box::new(
+            (0..(memory.len() - std::mem::size_of::<Self>())).filter_map(move |start| {
+                Some((
+                    base + start,
+                    Cursor::new(&memory[start..start + std::mem::size_of::<Self>()])
+                        .read_u8()
+                        .ok()?,
+                ))
+            }),
+        )
+    }
 
-register_reader!(possible_values_i32, i32, read_i32);
-register_reader!(possible_values_f32, f32, read_f32);
+    fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
+        let mut c = std::io::Cursor::new(val);
+        Ok(c.read_u8()?)
+    }
+
+    fn write_bytes<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_u8(*self)?;
+        Ok(())
+    }
+}
+
+macro_rules! read_from_bytes_impl {
+    ($SelfT:ty, $method:ident, $write_method:ident) => {
+        impl ReadFromBytes for $SelfT {
+            fn possible_values<'a>(
+                memory: &'a [u8],
+                base: usize,
+            ) -> Box<dyn Iterator<Item = crate::AddressValue<$SelfT>> + 'a> {
+                Box::new(
+                    (0..(memory.len() - std::mem::size_of::<$SelfT>())).filter_map(move |start| {
+                        Some((
+                            base + start,
+                            Cursor::new(&memory[start..start + std::mem::size_of::<$SelfT>()])
+                                .$method::<NativeEndian>()
+                                .ok()?,
+                        ))
+                    }),
+                )
+            }
+
+            fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
+                let mut c = std::io::Cursor::new(val);
+                Ok(c.$method::<NativeEndian>()?)
+            }
+
+            fn write_bytes<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
+                writer.$write_method::<NativeEndian>(*self)?;
+                Ok(())
+            }
+        }
+    };
+}
+
+read_from_bytes_impl!(i32, read_i32, write_i32);
+read_from_bytes_impl!(i16, read_i16, write_i16);

@@ -1,13 +1,14 @@
+use crate::memory::ReadFromBytes;
 use crate::{error::BetrayalResult, Filter};
 use crate::{BetrayalError, Writer};
 use std::str::FromStr;
 
 #[derive(PartialEq, Eq, Debug)]
-pub enum Command {
-    PerformFilter(Filter),
-    KeepWriting(Writer),
-    Write(Writer),
-    FindNeighbourValues(crate::neighbour_values::NeighbourValuesQuery),
+pub enum Command<T: ReadFromBytes> {
+    PerformFilter(Filter<T>),
+    KeepWriting(Writer<T>),
+    Write(Writer<T>),
+    FindNeighbourValues(crate::neighbour_values::NeighbourValuesQuery<T>),
     Quit,
     Refresh,
     Help,
@@ -15,11 +16,12 @@ pub enum Command {
     AddAddressRange(usize, usize),
 }
 
+
 macro_rules! parse_or_bad_command {
     ($value:expr) => {
         $value
             .parse()
-            .map_err(|e| BetrayalError::BadCommand(format!("invalid value: {}", e)))?
+            .map_err(|_e| BetrayalError::BadCommand(format!("invalid value")))?
     };
 }
 
@@ -42,7 +44,7 @@ COMMANDS:
 "f r 15 300"             -> finds values between 15 and 300
 "#;
 
-fn command_parser(i: &str) -> BetrayalResult<Command> {
+fn command_parser<T: ReadFromBytes>(i: &str) -> BetrayalResult<Command<T>> {
     let command = i.split_whitespace().collect::<Vec<_>>();
     match &command[..] {
         [] => Ok(Command::Refresh),
@@ -85,7 +87,7 @@ fn command_parser(i: &str) -> BetrayalResult<Command> {
     }
 }
 
-impl FromStr for Command {
+impl<T: ReadFromBytes> FromStr for Command<T> {
     type Err = BetrayalError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -100,20 +102,20 @@ mod test_command_parsing {
     #[test]
     fn test_filter_command() {
         assert_eq!(
-            "f e 44".parse::<Command>().unwrap(),
+            "f e 44".parse::<Command<i32>>().unwrap(),
             Command::PerformFilter(Filter::IsEqual(44))
         )
     }
 
     #[test]
     fn test_quit() {
-        assert_eq!("q".parse::<Command>().unwrap(), Command::Quit,)
+        assert_eq!("q".parse::<Command<i32>>().unwrap(), Command::Quit,)
     }
 
     #[test]
     fn test_write() {
         assert_eq!(
-            "w 3 2137".parse::<Command>().unwrap(),
+            "w 3 2137".parse::<Command<i32>>().unwrap(),
             Command::Write((3, 2137)),
         )
     }

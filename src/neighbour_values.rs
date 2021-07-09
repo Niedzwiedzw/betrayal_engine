@@ -1,13 +1,13 @@
-use crate::{AddressValue, ProcessQuery, error::{BetrayalError, BetrayalResult}};
+use crate::{AddressValue, ProcessQuery, error::{BetrayalError, BetrayalResult}, memory::ReadFromBytes};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NeighbourValuesQuery {
+pub struct NeighbourValuesQuery<T: ReadFromBytes> {
     pub window_size: usize,
-    pub values: Vec<i32>,
+    pub values: Vec<T>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NeighbourValues {
+pub struct NeighbourValues<T: ReadFromBytes> {
     pub window_size: usize,
-    pub values: Vec<AddressValue<i32>>,
+    pub values: Vec<AddressValue<T>>,
 }

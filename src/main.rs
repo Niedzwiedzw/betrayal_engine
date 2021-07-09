@@ -4,13 +4,15 @@ mod commands;
 mod helpers;
 mod memory;
 mod neighbour_values;
-
+use crate::memory::ReadFromBytes;
 use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
+use clap::{crate_version, App, Arg};
 use commands::{Command, HELP_TEXT};
 use itertools::Itertools;
 use neighbour_values::NeighbourValuesQuery;
 use parking_lot::Mutex;
 use rayon::prelude::*;
+use std::thread::JoinHandle;
 use std::{collections::BTreeMap, fs::File, io::Write, path::Path, str::FromStr, sync::Arc};
 use std::{
     io::{self, BufRead, Read},
@@ -93,29 +95,38 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
     }
 }
 
-pub type AddressValue<T> = (usize, T);
+pub type AddressValue<T: ReadFromBytes> = (usize, T);
 
-pub type CurrentQueryResults = BTreeMap<usize, AddressValue<i32>>;
+// #[derive(Debug)]
+// pub enum AddressValueAs {
+//     I32(AddressValue<i32>),
+// }
+
+pub type CurrentQueryResults<T: ReadFromBytes> = BTreeMap<usize, AddressValue<T>>;
 
 #[derive(Debug)]
-pub struct ProcessQuery {
+pub struct ProcessQuery<T: ReadFromBytes> {
     pub pid: i32,
-    pub results: CurrentQueryResults,
+    pub results: CurrentQueryResults<T>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Filter {
-    IsEqual(i32),
-    InRange((i32, i32)),
+pub enum Filter<T: ReadFromBytes> {
+    IsEqual(T),
+    InRange((T, T)),
     Any,
-    ChangedBy(i32),
+    ChangedBy(T),
     InAddressRanges(Vec<(usize, usize)>),
 }
 
-pub type Writer = (usize, i32);
+pub type Writer<T: ReadFromBytes> = (usize, T);
 
-impl Filter {
-    pub fn matches(self, result: AddressValue<i32>, current_results: &CurrentQueryResults) -> bool {
+impl<T: ReadFromBytes> Filter<T> {
+    pub fn matches(
+        self,
+        result: AddressValue<T>,
+        current_results: &CurrentQueryResults<T>,
+    ) -> bool {
         let (address, current_value) = result;
         match self {
             Self::IsEqual(v) => v == current_value,
@@ -133,7 +144,7 @@ impl Filter {
     }
 }
 
-impl ProcessQuery {
+impl<T: ReadFromBytes> ProcessQuery<T> {
     pub fn new(pid: i32) -> Self {
         Self {
             pid,
@@ -141,20 +152,18 @@ impl ProcessQuery {
         }
     }
 
-    fn read_at(pid: i32, address: usize) -> BetrayalResult<AddressValue<i32>> {
-        let val = read_memory(pid, address, std::mem::size_of::<i32>())?;
-        let mut c = Cursor::new(val);
+    fn read_at(pid: i32, address: usize) -> BetrayalResult<AddressValue<T>> {
+        let val = read_memory(pid, address, std::mem::size_of::<T>())?;
         Ok((
             address,
-            c.read_i32::<NativeEndian>()
-                .map_err(|_e| BetrayalError::PartialRead)?,
+            T::read_value(val).map_err(|_e| BetrayalError::PartialRead)?,
         ))
     }
 
-    fn write_at(pid: i32, address: usize, value: i32) -> BetrayalResult<()> {
+    fn write_at(pid: i32, address: usize, value: T) -> BetrayalResult<()> {
         let mut buffer = vec![];
-        buffer
-            .write_i32::<NativeEndian>(value)
+        value
+            .write_bytes(&mut buffer)
             .map_err(|e| BetrayalError::BadWrite(format!("bad write: {}", e)))?;
         write_memory(pid, address, buffer)?;
         Ok(())
@@ -176,7 +185,7 @@ impl ProcessQuery {
         Ok(())
     }
 
-    pub fn perform_write(&mut self, writer: Writer) -> BetrayalResult<()> {
+    pub fn perform_write(&mut self, writer: Writer<T>) -> BetrayalResult<()> {
         let (selected_address, value) = writer;
         let (address, _current_value) = self
             .results
@@ -187,7 +196,7 @@ impl ProcessQuery {
         Ok(())
     }
 
-    pub fn perform_new_query(&mut self, filter: Filter) -> BetrayalResult<()> {
+    pub fn perform_new_query(&mut self, filter: Filter<T>) -> BetrayalResult<()> {
         let results = self
             .query(filter.clone())?
             .into_par_iter()
@@ -197,7 +206,7 @@ impl ProcessQuery {
         self.results = results;
         Ok(())
     }
-    pub fn perform_query(&mut self, filter: Filter) -> BetrayalResult<()> {
+    pub fn perform_query(&mut self, filter: Filter<T>) -> BetrayalResult<()> {
         if self.results.is_empty() {
             self.perform_new_query(filter.clone())?;
         }
@@ -220,10 +229,9 @@ impl ProcessQuery {
         Ok(mappings)
     }
     fn all_possible_addresses(&self) -> BetrayalResult<Box<impl Iterator<Item = i32>>> {
-        Ok(box self
-            .mappings()?
-            .into_iter()
-            .flat_map(|map| (map.base as i32)..((map.ceiling as i32) - std::mem::size_of::<i32>() as i32)))
+        Ok(box self.mappings()?.into_iter().flat_map(|map| {
+            (map.base as i32)..((map.ceiling as i32) - std::mem::size_of::<i32>() as i32)
+        }))
     }
     pub fn in_address_space(&self, value: i32) -> BetrayalResult<bool> {
         Ok(self
@@ -234,9 +242,9 @@ impl ProcessQuery {
 
     fn query<'process, 'result>(
         &'process self,
-        filter: Filter,
+        filter: Filter<T>,
         // ) -> BetrayalResult<Box<impl Iterator<Item = QueryResult> + 'result>>
-    ) -> BetrayalResult<Vec<AddressValue<i32>>>
+    ) -> BetrayalResult<Vec<AddressValue<T>>>
     where
         'process: 'result,
     {
@@ -248,13 +256,13 @@ impl ProcessQuery {
             .unique_by(|m| m.ceiling)
             .collect();
 
-        let results: Arc<Mutex<Vec<AddressValue<i32>>>> = Default::default();
+        let results: Arc<Mutex<Vec<AddressValue<T>>>> = Default::default();
         mappings.into_par_iter().for_each(|map| {
             let results = Arc::clone(&results);
             let filter = filter.clone();
             let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
             let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base) {
-                Ok(m) => memory::possible_values_i32(&m[..], map.base)
+                Ok(m) => T::possible_values(&m[..], map.base)
                     .filter(|result| filter.clone().matches(*result, &dummy_results))
                     .collect(),
                 Err(_e) => {
@@ -263,7 +271,6 @@ impl ProcessQuery {
             };
             results.lock().append(&mut results_chunk);
         });
-
 
         println!(" :: scanning done ::");
         let results = results.lock().clone();
@@ -275,8 +282,8 @@ impl ProcessQuery {
         NeighbourValuesQuery {
             values,
             window_size,
-        }: NeighbourValuesQuery,
-    ) -> BetrayalResult<Vec<NeighbourValues>> {
+        }: NeighbourValuesQuery<T>,
+    ) -> BetrayalResult<Vec<NeighbourValues<T>>> {
         let pid = self.pid;
         let mappings = self.mappings()?;
         let mappings: Vec<_> = mappings
@@ -284,7 +291,7 @@ impl ProcessQuery {
             .unique_by(|m| m.base)
             .unique_by(|m| m.ceiling)
             .collect();
-        let results: Arc<Mutex<Vec<NeighbourValues>>> = Default::default();
+        let results: Arc<Mutex<Vec<NeighbourValues<T>>>> = Default::default();
         mappings.into_par_iter().for_each(|map| {
             let results = Arc::clone(&results);
             let window_size = window_size.clone();
@@ -292,9 +299,9 @@ impl ProcessQuery {
             let values = values.clone();
             // let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
             let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base) {
-                Ok(m) => memory::possible_values_i32(&m[..], map.base)
+                Ok(m) => T::possible_values(&m[..], map.base)
                     .enumerate()
-                    .map(|(i, v)| (i % std::mem::size_of::<i32>(), v))
+                    .map(|(i, v)| (i % std::mem::size_of::<T>(), v))
                     .sorted_by_key(|(phase, _v)| *phase)
                     .group_by(|(phase, _v)| *phase)
                     .into_iter()
@@ -329,17 +336,18 @@ impl ProcessQuery {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let pid = take_input::<i32>("PID")?;
-    println!("PID: {}", pid);
-    let process = ProcessQuery::new(pid);
+async fn run<T: 'static + ReadFromBytes>(
+    pid: i32,
+    tasks: &mut Vec<JoinHandle<()>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    
+    let process = ProcessQuery::<T>::new(pid);
     let process = Arc::new(Mutex::new(process));
     println!("{}", HELP_TEXT);
-    let mut tasks = vec![];
+    println!(" :: running in [{}] mode", std::any::type_name::<T>());
     loop {
         let process = Arc::clone(&process);
-        let input = take_input::<Command>("");
+        let input = take_input::<Command<T>>("");
         match input {
             Ok(command) => match command {
                 Command::Quit => break,
@@ -378,14 +386,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Command::AddAddress(address) => {
                     let mut process = process.lock();
-                    process.results.insert(address, (address, 0));
+                    process
+                        .results
+                        .insert(address, (address, Default::default()));
                     process.update_results()?;
                 }
                 Command::AddAddressRange(start, end) => {
                     println!(" :: adding {} - {}", start, end);
                     let mut process = process.lock();
                     for address in start..end {
-                        process.results.insert(address, (address, 0));
+                        process
+                            .results
+                            .insert(address, (address, Default::default()));
                     }
                     process.update_results()?;
                 }
@@ -403,7 +415,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
-    println!("{:#?}", process);
 
+    println!("{:#?}", process);
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let matches = App::new("Betrayal Engine")
+        .version(crate_version!())
+        .author("Niedźwiedź <wojciech.brozek@niedzwiedz.it>")
+        .about("A fast, lightweight memory searcher and editor")
+        .arg(
+            Arg::new("pid")
+                .short('p')
+                .long("pid")
+                .value_name("INT")
+                .required(true)
+                .about("PID of the process you're interested in analyzing"),
+        )
+        .arg(
+            Arg::new("variable_type")
+                .short('t')
+                .long("variable_type")
+                .value_name("i32 (default) | i16 | u8")
+                .default_value("i32")
+                .about("currently you need to specify the format up front and only use that until the end of the program. but hey, you can always run multiple instances of this thing. oh yeah and i32 is 32 bits signed, equivalent of 4 bytes in other software"),
+        )
+        .get_matches();
+    let pid = matches.value_of_t_or_exit("pid");
+    println!("PID: {}", pid);
+
+    let mut tasks = vec![];
+    match matches.value_of("variable_type") {
+        Some(t) => match t.trim() {
+            "i32" => run::<i32>(pid, &mut tasks).await?,
+            "i16" => run::<i16>(pid, &mut tasks).await?,
+            "u8" => run::<u8>(pid, &mut tasks).await?,
+            _ => panic!("unsupported variable type")
+        },
+        None => {
+            panic!("variable_type is required");
+        }
+    }
+    run::<i32>(pid, &mut tasks).await?;
     Ok(())
 }

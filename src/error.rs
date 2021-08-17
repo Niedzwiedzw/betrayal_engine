@@ -14,6 +14,10 @@ pub enum BetrayalError {
     Other(#[from] anyhow::Error),
     #[error("memory write resulted in an error {0}")]
     BadWrite(String),
+    #[error("problem with the config file :: {0}")]
+    ConfigFileError(String),
+    #[error("script has some error :: {0}")]
+    ScriptingError(String),
 }
 
 pub type BetrayalResult<T> = Result<T, BetrayalError>;

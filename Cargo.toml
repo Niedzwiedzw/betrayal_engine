@@ -14,10 +14,19 @@ futures = "0.3.15"
 itertools = "0.10.0"
 nix = "0.20.0"
 nom = "6.1.2"
+notify = "4.0.17"
 parking_lot = "0.11.1"
 procfs = "0.9.1"
 procmaps = "0.4.1"
 rayon = "1.5.1"
+
+serde = {version = "1.0.127", features = ["derive"] }
+serde_yaml = "0.8.17"
 sled = "0.34.6"
+tempfile = "3.2.0"
 thiserror = "1.0.24"
 tokio = {version = "1.6", features = ["full"]}
+
+[dependencies.rhai]
+version = "1.0.1"
+features = ["no_float", "no_object", "no_module"]

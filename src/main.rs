@@ -1,12 +1,13 @@
 #![feature(box_syntax)]
 
-mod commands;
-mod helpers;
-mod memory;
-mod neighbour_values;
+pub mod commands;
+pub mod helpers;
+pub mod memory;
+pub mod neighbour_values;
+pub mod reclass;
 use crate::memory::ReadFromBytes;
-use byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use clap::{crate_version, App, Arg};
+
+use clap::{App, Arg, Subcommand, crate_version};
 use commands::{Command, HELP_TEXT};
 use itertools::Itertools;
 use neighbour_values::NeighbourValuesQuery;
@@ -15,16 +16,17 @@ use rayon::prelude::*;
 use std::thread::JoinHandle;
 use std::{collections::BTreeMap, fs::File, io::Write, path::Path, str::FromStr, sync::Arc};
 use std::{
-    io::{self, BufRead, Read},
+    io::{self, BufRead},
     ops::DerefMut,
 };
 
-use io::Cursor;
+
+
 use nix::{
     sys::uio::{process_vm_readv, process_vm_writev, IoVec, RemoteIoVec},
     unistd::Pid,
 };
-use rayon::prelude::*;
+
 
 use error::{BetrayalError, BetrayalResult};
 use procmaps::{self, Map};
@@ -152,7 +154,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         }
     }
 
-    fn read_at(pid: i32, address: usize) -> BetrayalResult<AddressValue<T>> {
+    pub fn read_at(pid: i32, address: usize) -> BetrayalResult<AddressValue<T>> {
         let val = read_memory(pid, address, std::mem::size_of::<T>())?;
         Ok((
             address,
@@ -160,7 +162,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         ))
     }
 
-    fn write_at(pid: i32, address: usize, value: T) -> BetrayalResult<()> {
+    pub fn write_at(pid: i32, address: usize, value: T) -> BetrayalResult<()> {
         let mut buffer = vec![];
         value
             .write_bytes(&mut buffer)
@@ -340,7 +342,6 @@ async fn run<T: 'static + ReadFromBytes>(
     pid: i32,
     tasks: &mut Vec<JoinHandle<()>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    
     let process = ProcessQuery::<T>::new(pid);
     let process = Arc::new(Mutex::new(process));
     println!("{}", HELP_TEXT);
@@ -426,6 +427,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .version(crate_version!())
         .author("Niedźwiedź <wojciech.brozek@niedzwiedz.it>")
         .about("A fast, lightweight memory searcher and editor")
+        .subcommand(
+            App::new("reclass")
+                .about("reclass-like interface for finding structs")
+        )
         .arg(
             Arg::new("pid")
                 .short('p')
@@ -445,7 +450,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get_matches();
     let pid = matches.value_of_t_or_exit("pid");
     println!("PID: {}", pid);
-
+    if let Some(ref matches) = matches.subcommand_matches("reclass") {
+        reclass::run::run(pid)?;
+        std::process::exit(0);
+    }
     let mut tasks = vec![];
     match matches.value_of("variable_type") {
         Some(t) => match t.trim() {
@@ -454,7 +462,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "u8" => run::<u8>(pid, &mut tasks).await?,
             "f32" => run::<f32>(pid, &mut tasks).await?,
             "f64" => run::<f64>(pid, &mut tasks).await?,
-            _ => panic!("unsupported variable type")
+            _ => panic!("unsupported variable type"),
         },
         None => {
             panic!("variable_type is required");

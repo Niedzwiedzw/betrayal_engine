@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use crate::{error::BetrayalResult, memory::ReadFromBytes, ProcessQuery};
+use crate::{AddressInfo, ProcessQuery, error::BetrayalResult, memory::ReadFromBytes};
 
-pub fn read_memory<T: ReadFromBytes>(pid: i32, address: usize) -> BetrayalResult<T> {
-    ProcessQuery::<T>::read_at(pid, address).map(|(_address, value)| value)
+pub fn read_memory<T: ReadFromBytes>(pid: i32, address: usize) -> BetrayalResult<(AddressInfo, T)> {
+    ProcessQuery::<T>::read_at(pid, address).map(|(info, _address, value)| (info, value))
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -20,14 +20,23 @@ pub enum Field {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ValueResult<T> {
-    Ok(T),
+    Ok(AddressInfo, T),
     Err(String),
 }
 
-impl<T> From<BetrayalResult<T>> for ValueResult<T> {
-    fn from(r: BetrayalResult<T>) -> Self {
+impl<T> ValueResult<T> {
+    pub fn info(&self) -> Option<&AddressInfo> {
+        match self {
+            Self::Ok(info, _) => Some(info),
+            Self::Err(_) => None,
+        }
+    }
+}
+
+impl<T> From<BetrayalResult<(AddressInfo, T)>> for ValueResult<T> {
+    fn from(r: BetrayalResult<(AddressInfo, T)>) -> Self {
         match r {
-            Ok(v) => Self::Ok(v),
+            Ok((info , v)) => Self::Ok(info, v),
             Err(e) => Self::Err(format!("error :: {}", e)),
         }
     }
@@ -43,6 +52,21 @@ pub enum FieldResult {
     Pointer(usize, Box<Self>),
     ReclassStruct(ReclassResult),
 }
+
+impl FieldResult {
+    pub fn info(&self) -> Option<&AddressInfo> {
+        match self {
+            FieldResult::I32(r) => r.info(),
+            FieldResult::I16(r) => r.info(),
+            FieldResult::U8(r) => r.info(),
+            FieldResult::F32(r) => r.info(),
+            FieldResult::F64(r) => r.info(),
+            FieldResult::Pointer(_, p) => p.info(),
+            FieldResult::ReclassStruct(r) => r.fields.iter().map(|(_, result)| result).next().map(|s| s.info()).flatten(),
+        }
+    }
+}
+
 
 impl Field {
     pub fn size(&self) -> usize {
@@ -80,6 +104,7 @@ pub struct ReclassStruct {
     pub fields: BTreeMap<String, Field>,
 }
 
+
 impl ReclassStruct {
     pub fn result(self, pid: i32, address: usize) -> ReclassResult {
         let mut base = address;
@@ -94,9 +119,11 @@ impl ReclassStruct {
             fields: fields
                 .into_iter()
                 .map(|(name, address, field)| {
+                    let result = field.result(pid, address);
+                    let is_static = result.info().map(|i| i.is_static()).unwrap_or(false);
                     (
-                        format!("[{}] :: {}", address, name),
-                        field.result(pid, address),
+                        format!("[{}{}] :: {}", if is_static {"@"} else {""}, address, name),
+                        result,
                     )
                 })
                 .collect(),

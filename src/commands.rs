@@ -8,7 +8,6 @@ pub enum Command<T: ReadFromBytes> {
     PerformFilter(Filter<T>),
     KeepWriting(Writer<T>),
     Write(Writer<T>),
-    FindNeighbourValues(crate::neighbour_values::NeighbourValuesQuery<T>),
     Quit,
     Refresh,
     Help,
@@ -59,16 +58,6 @@ fn command_parser<T: ReadFromBytes>(i: &str) -> BetrayalResult<Command<T>> {
             parse_or_bad_command!(address_start),
             parse_or_bad_command!(address_end),
         )),
-        ["n", window_size, ref values_ @ ..] => Ok(Command::FindNeighbourValues({
-            let mut values = vec![];
-            for v in values_ {
-                values.push(parse_or_bad_command!(v));
-            }
-            crate::neighbour_values::NeighbourValuesQuery {
-                values,
-                window_size: parse_or_bad_command!(window_size),
-            }
-        })),
         ["k", index, value] => Ok(Command::KeepWriting((
             parse_or_bad_command!(index),
             parse_or_bad_command!(value),

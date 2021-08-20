@@ -7,13 +7,14 @@ pub mod neighbour_values;
 pub mod reclass;
 use crate::memory::ReadFromBytes;
 
-use serde::{Deserialize, Serialize};
 use clap::{crate_version, App, Arg, Subcommand};
 use commands::{Command, HELP_TEXT};
 use itertools::Itertools;
 use neighbour_values::NeighbourValuesQuery;
 use parking_lot::Mutex;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::thread::JoinHandle;
 use std::{collections::BTreeMap, fs::File, io::Write, path::Path, str::FromStr, sync::Arc};
 use std::{
@@ -95,7 +96,6 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
     }
 }
 
-
 pub type AddressValue<T: ReadFromBytes> = (AddressInfo, usize, T);
 
 // #[derive(Debug)]
@@ -150,6 +150,12 @@ pub struct AddressInfo {
     pub writable: bool,
 }
 
+pub struct StaticLocation {
+    pub map_path: String,
+    pub offset: usize,
+    pub base: usize,
+}
+
 impl AddressInfo {
     pub fn from_address(pid: i32, address: usize) -> BetrayalResult<Self> {
         let (info, _map) = ProcessQuery::<u8>::mappings_all(pid)?
@@ -161,6 +167,24 @@ impl AddressInfo {
 
     pub fn is_static(&self) -> bool {
         !self.writable
+    }
+
+    pub fn static_location(&self, pid: i32, address: usize) -> Option<StaticLocation> {
+        if !self.is_static() {
+            return None;
+        }
+        let (_info, map) = ProcessQuery::<u8>::mappings_all(pid).ok()?.into_iter()
+            .find(|(_info, map)| map.base <= address && address < map.ceiling)?;
+
+        let path = map.pathname;
+        match path {
+            procmaps::Path::MappedFile(path) => Some(StaticLocation {
+                map_path: path.clone(),
+                base: map.base,
+                offset: address - map.base,
+            }),
+            _ => None,
+        }
     }
 }
 
@@ -372,7 +396,7 @@ async fn run<T: 'static + ReadFromBytes>(
                         Ok(v) => v,
                         Err(e) => {
                             eprintln!("error while adding address :: {}", e);
-                            continue
+                            continue;
                         }
                     };
                     process
@@ -387,7 +411,7 @@ async fn run<T: 'static + ReadFromBytes>(
                         Ok(v) => v,
                         Err(e) => {
                             eprintln!("error while adding address :: {}", e);
-                            continue
+                            continue;
                         }
                     };
                     for address in start..end {
@@ -406,8 +430,25 @@ async fn run<T: 'static + ReadFromBytes>(
         if process.lock().results.len() > 50 {
             println!(":: found {} matches", process.lock().results.len());
         } else {
-            for (index, (_, (info, address, value))) in process.lock().results.iter().enumerate() {
-                println!("{}. {} (0x{:x}) -- {} {}", index, address, address, value, if info.is_static() {"@STATIC"} else {""});
+            let process = process.lock();
+            for (index, (_, (info, address, value))) in process.results.iter().enumerate() {
+                println!(
+                    "{}. {} (0x{:x}) -- {} {}",
+                    index,
+                    address,
+                    address,
+                    value,
+                    match info.static_location(process.pid, *address) {
+                        Some(location) => format!("@STATIC[static_address(\"{}\")+{}] (raw: {} + {})", location.map_path, location.offset, location.base, location.offset),
+                        None => String::new()
+                    }
+                    // if info.is_static() {
+                    //     match 
+                    //     let location = info.static_location(process.pid, *address);
+                    //     format!("@STATIC()")
+
+                    // } else { String::new() }
+                );
             }
         }
     }

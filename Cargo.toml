@@ -26,7 +26,8 @@ sled = "0.34.6"
 tempfile = "3.2.0"
 thiserror = "1.0.24"
 tokio = {version = "1.6", features = ["full"]}
+indexmap = {version = "1.7.0", features = ["serde-1"] }
 
 [dependencies.rhai]
 version = "1.0.1"
-features = ["no_float", "no_object", "no_module"]
+features = ["no_float", "no_object", "no_module", "only_i64"]

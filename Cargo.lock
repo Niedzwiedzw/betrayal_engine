@@ -56,6 +56,7 @@ dependencies = [
  "byteorder",
  "clap",
  "futures",
+ "indexmap",
  "itertools",
  "nix",
  "nom 6.1.2",
@@ -459,6 +460,7 @@ checksum = "bc633605454125dec4b66843673f01c7df2b89479b32e0ed634e43a91cff62a5"
 dependencies = [
  "autocfg",
  "hashbrown",
+ "serde",
 ]
 
 [[package]]

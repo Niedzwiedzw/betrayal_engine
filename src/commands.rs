@@ -41,6 +41,17 @@ COMMANDS:
 "f e 2137"               -> finds values equal to 2137
 "f c 15"                 -> finds values that changed by 15 compared to previous scan (does nothing for initial scan)
 "f r 15 300"             -> finds values between 15 and 300
+
+FIND OUT WHAT WRITES TO THIS ADDRESS:
+not implemented, use gdb (gnu debugger)
+sudo gdb --pid <process-id>  # atteches to the process
+watch *<value_address>       # (sets a breakpoint)
+c                            # (continue)
+# do something, take the hit etc
+set disassembly-flavor intel # make assembly readable
+layout asm                   # shows the actual assembly
+info registers               # current register values
+
 "#;
 
 fn command_parser<T: ReadFromBytes>(i: &str) -> BetrayalResult<Command<T>> {

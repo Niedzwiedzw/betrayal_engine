@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-
-use crate::{AddressInfo, ProcessQuery, error::BetrayalResult, memory::ReadFromBytes};
+use std::{convert::TryInto};
+use indexmap::IndexMap;
+use crate::{error::BetrayalResult, memory::ReadFromBytes, AddressInfo, ProcessQuery};
 
 pub fn read_memory<T: ReadFromBytes>(pid: i32, address: usize) -> BetrayalResult<(AddressInfo, T)> {
     ProcessQuery::<T>::read_at(pid, address).map(|(info, _address, value)| (info, value))
@@ -9,12 +9,18 @@ pub fn read_memory<T: ReadFromBytes>(pid: i32, address: usize) -> BetrayalResult
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum Field {
-    I32,
-    I16,
+    Padding(usize),
     U8,
+    I16,
+    U16,
+    I32,
+    U32,
+    I64,
+    U64,
     F32,
     F64,
-    Pointer(usize, Box<Self>),
+    Pointer32(Box<Self>),
+    Pointer64(Box<Self>),
     Struct(ReclassStruct),
 }
 
@@ -22,6 +28,7 @@ pub enum Field {
 pub enum ValueResult<T> {
     Ok(AddressInfo, T),
     Err(String),
+    Padding(usize),
 }
 
 impl<T> ValueResult<T> {
@@ -29,6 +36,7 @@ impl<T> ValueResult<T> {
         match self {
             Self::Ok(info, _) => Some(info),
             Self::Err(_) => None,
+            Self::Padding(_) => None,
         }
     }
 }
@@ -36,7 +44,7 @@ impl<T> ValueResult<T> {
 impl<T> From<BetrayalResult<(AddressInfo, T)>> for ValueResult<T> {
     fn from(r: BetrayalResult<(AddressInfo, T)>) -> Self {
         match r {
-            Ok((info , v)) => Self::Ok(info, v),
+            Ok((info, v)) => Self::Ok(info, v),
             Err(e) => Self::Err(format!("error :: {}", e)),
         }
     }
@@ -44,53 +52,96 @@ impl<T> From<BetrayalResult<(AddressInfo, T)>> for ValueResult<T> {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum FieldResult {
-    I32(ValueResult<i32>),
+    Padding(usize),
+    U16(ValueResult<u16>),
     I16(ValueResult<i16>),
+    U32(ValueResult<u32>),
+    I32(ValueResult<i32>),
+    U64(ValueResult<u64>),
+    I64(ValueResult<i64>),
     U8(ValueResult<u8>),
     F32(ValueResult<f32>),
     F64(ValueResult<f64>),
-    Pointer(usize, Box<Self>),
+    Pointer32(usize, Box<Self>),
+    Pointer64(usize, Box<Self>),
     ReclassStruct(ReclassResult),
 }
 
 impl FieldResult {
     pub fn info(&self) -> Option<&AddressInfo> {
         match self {
+            FieldResult::Padding(s) => None,
+            FieldResult::U16(r) => r.info(),
+            FieldResult::U32(r) => r.info(),
+            FieldResult::U64(r) => r.info(),
+            FieldResult::I64(r) => r.info(),
             FieldResult::I32(r) => r.info(),
             FieldResult::I16(r) => r.info(),
             FieldResult::U8(r) => r.info(),
             FieldResult::F32(r) => r.info(),
             FieldResult::F64(r) => r.info(),
-            FieldResult::Pointer(_, p) => p.info(),
-            FieldResult::ReclassStruct(r) => r.fields.iter().map(|(_, result)| result).next().map(|s| s.info()).flatten(),
+            FieldResult::Pointer32(_, p) => p.info(),
+            FieldResult::Pointer64(_, p) => p.info(),
+            FieldResult::ReclassStruct(r) => r
+                .fields
+                .iter()
+                .map(|(_, result)| result)
+                .next()
+                .map(|s| s.info())
+                .flatten(),
         }
     }
 }
 
-
 impl Field {
     pub fn size(&self) -> usize {
         match self {
+            Field::Padding(size) => *size,
             Field::I32 => std::mem::size_of::<i32>(),
             Field::I16 => std::mem::size_of::<i16>(),
             Field::U8 => std::mem::size_of::<u8>(),
             Field::F32 => std::mem::size_of::<f32>(),
             Field::F64 => std::mem::size_of::<f64>(),
-            Field::Pointer(_, _) => std::mem::size_of::<usize>(),
+            Field::Pointer32(_) => std::mem::size_of::<u32>(),
+            Field::Pointer64(_) => std::mem::size_of::<u64>(),
             Field::Struct(_) => 0,
+            Field::U16 => std::mem::size_of::<u16>(),
+            Field::U32 => std::mem::size_of::<u32>(),
+            Field::I64 => std::mem::size_of::<i64>(),
+            Field::U64 => std::mem::size_of::<u64>(),
         }
     }
 
     pub fn result(self, pid: i32, address: usize) -> FieldResult {
         match self {
-            Field::I32 => FieldResult::I32(read_memory::<i32>(pid, address).into()),
-            Field::I16 => FieldResult::I16(read_memory::<i16>(pid, address).into()),
+            Field::Padding(s) => FieldResult::Padding(s),
             Field::U8 => FieldResult::U8(read_memory::<u8>(pid, address).into()),
+            Field::I16 => FieldResult::I16(read_memory::<i16>(pid, address).into()),
+            Field::U16 => FieldResult::U16(read_memory::<u16>(pid, address).into()),
+            Field::I32 => FieldResult::I32(read_memory::<i32>(pid, address).into()),
+            Field::U32 => FieldResult::U32(read_memory::<u32>(pid, address).into()),
+            Field::I64 => FieldResult::I64(read_memory::<i64>(pid, address).into()),
+            Field::U64 => FieldResult::U64(read_memory::<u64>(pid, address).into()),
             Field::F32 => FieldResult::F32(read_memory::<f32>(pid, address).into()),
             Field::F64 => FieldResult::F64(read_memory::<f64>(pid, address).into()),
-            Field::Pointer(address, field) => {
-                FieldResult::Pointer(address, Box::new(field.result(pid, address)))
-            }
+            Field::Pointer32(field) => FieldResult::Pointer32(
+                address,
+                match read_memory::<u32>(pid, address) {
+                    Ok((_info, address)) => {
+                        Box::new(field.result(pid, address.try_into().expect("bad platform")))
+                    }
+                    Err(e) => Box::new(FieldResult::U32(Err(e).into())),
+                },
+            ),
+            Field::Pointer64(field) => FieldResult::Pointer64(
+                address,
+                match read_memory::<u64>(pid, address) {
+                    Ok((_info, address)) => {
+                        Box::new(field.result(pid, address.try_into().expect("bad platform")))
+                    }
+                    Err(e) => Box::new(FieldResult::U64(Err(e).into())),
+                },
+            ),
             Field::Struct(reclass_struct) => {
                 FieldResult::ReclassStruct(reclass_struct.result(pid, address))
             }
@@ -101,9 +152,8 @@ impl Field {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReclassStruct {
     pub name: String,
-    pub fields: BTreeMap<String, Field>,
+    pub fields: IndexMap<String, Field>,
 }
-
 
 impl ReclassStruct {
     pub fn result(self, pid: i32, address: usize) -> ReclassResult {
@@ -122,7 +172,12 @@ impl ReclassStruct {
                     let result = field.result(pid, address);
                     let is_static = result.info().map(|i| i.is_static()).unwrap_or(false);
                     (
-                        format!("[{}{}] :: {}", if is_static {"@"} else {""}, address, name),
+                        format!(
+                            "[{}{}] :: {}",
+                            if is_static { "@" } else { "" },
+                            address,
+                            name
+                        ),
                         result,
                     )
                 })
@@ -134,7 +189,7 @@ impl ReclassStruct {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ReclassResult {
     pub name: String,
-    pub fields: BTreeMap<String, FieldResult>,
+    pub fields: IndexMap<String, FieldResult>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -154,13 +209,14 @@ impl Default for ConfigEntry {
 
 impl ConfigEntry {
     pub fn result(self, pid: i32) -> BetrayalResult<ConfigEntryResult> {
-        let base_address = super::scripting::calculate_address(&self.base_address)?;
+        let base_address = super::scripting::calculate_address(pid, &self.base_address)?;
         Ok(ConfigEntryResult {
             base_address,
             struct_definition: self.struct_definition.result(pid, base_address),
         })
     }
 }
+
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ConfigEntryResult {
@@ -206,17 +262,19 @@ impl Default for ReclassStruct {
                 .map(|i| (format!("field_{}", i), Field::I32))
                 .chain(std::iter::once((
                     "field_6".to_string(),
-                    Field::Pointer(0x2137, Box::new(Field::I16)),
+                    Field::Pointer32(Box::new(Field::I16)),
                 )))
                 .chain(std::iter::once((
                     "field_7".to_string(),
-                    Field::Pointer(
-                        0x2139,
-                        Box::new(Field::Struct(Self {
-                            name: "SomeInnerClass".to_string(),
-                            fields: std::iter::once(("field_1".to_string(), Field::F64)).collect(),
-                        })),
-                    ),
+                    Field::Pointer64(Box::new(Field::Struct(Self {
+                        name: "SomeInnerClass".to_string(),
+                        fields: std::iter::once(("field_1".to_string(), Field::F64))
+                            .chain(std::iter::once((
+                                "field_2".to_string(),
+                                Field::Padding(2137),
+                            )))
+                            .collect(),
+                    }))),
                 )))
                 .collect(),
         }

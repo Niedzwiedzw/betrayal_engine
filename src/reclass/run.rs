@@ -2,15 +2,15 @@ use crate::{
     error::{BetrayalError, BetrayalResult},
     reclass::config_file::{Config, ReclassStruct},
 };
-use std::{fs::read_to_string, io::{BufWriter, Write}, path::PathBuf, process::Command, time::Duration};
-
+use std::{fs::{Permissions, read_to_string}, io::{BufWriter, Write}, path::PathBuf, process::Command, time::Duration};
+use std::os::unix::fs::PermissionsExt;
 use notify::{DebouncedEvent, RawEvent, RecursiveMode, Watcher, raw_watcher, watcher};
 use serde_yaml::{from_str, to_string};
 use std::sync::mpsc::channel;
 
 pub fn run(pid: i32) -> BetrayalResult<()> {
     println!("running reclass");
-    let mut tempfile = tempfile::NamedTempFile::new()
+    let mut tempfile = tempfile::Builder::new().suffix(".yaml").tempfile()
         .map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
     let config =
         to_string(&Config::default()).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
@@ -19,14 +19,22 @@ pub fn run(pid: i32) -> BetrayalResult<()> {
     let editor = std::env::var("EDITOR").map_err(|e| {
         BetrayalError::ConfigFileError(format!("EDITOR env var is required :: {}", e))
     })?;
+    // set correct permissions
     let path = PathBuf::from(tempfile.path().clone());
+    {
+        let mut perms = std::fs::metadata(&path).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?.permissions();
+        perms.set_mode(0o666);
+        std::fs::set_permissions(&path, perms).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
+    }
+    println!(" :: edit [{:?}] file and see the live output", path);
+
     let path_for_editor = path.clone();
-    let editor_task = std::thread::spawn(|| {
-        std::process::Command::new(editor)
-            .arg(path_for_editor)
-            .output()
-            .map_err(|e| BetrayalError::ConfigFileError(format!("editor closed :: {}", e)))
-    });
+    // let editor_task = std::thread::spawn(|| {
+    //     std::process::Command::new(editor)
+    //         .arg(path_for_editor)
+    //         .output()
+    //         .map_err(|e| BetrayalError::ConfigFileError(format!("editor closed :: {}", e)))
+    // });
 
     let (tx, rx) = channel();
 
@@ -76,9 +84,9 @@ pub fn run(pid: i32) -> BetrayalResult<()> {
         }
     }
 
-    editor_task
-        .join()
-        .map_err(|e| BetrayalError::ConfigFileError(format!("editor closed :: {:?}", e)))??;
+    // editor_task
+    //     .join()
+    //     .map_err(|e| BetrayalError::ConfigFileError(format!("editor closed :: {:?}", e)))??;
 
     Ok(())
 }

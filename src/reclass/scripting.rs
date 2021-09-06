@@ -52,11 +52,18 @@ fn static_address(pid: i32, file: &str) -> Result<i64, Box<EvalAltResult>> {
     if maps.len() > 1 {
         return Err(format!("static_address :: more than one memory entry with name [{}] found ({})", file, maps.len()).into());
     }
-    let (_info, map) = match maps
-        .first() {
-            Some(map) => map,
-            None => return Err(format!("static_address :: {} :: no such map", file).into())
-        };
+
+    let (_info, map) = maps.into_iter()
+        .find(|(_info, map)| match &map.pathname {
+            procmaps::Path::MappedFile(s) => s == file && map.perms.writable == false,
+            _ => false,
+        }).ok_or(format!("static_address() :: no such section : {}", file))?;
+
+    // let (_info, map) = match maps
+    //     .first() {
+    //         Some(map) => map,
+    //         None => return Err(format!("static_address :: {} :: no such map", file).into())
+    //     };
     Ok(or_err!(map.base.try_into(), "that address doesn't fit in your address space"))
 }
 

@@ -4,7 +4,7 @@ use indexmap::IndexMap;
 use crate::{error::BetrayalResult, memory::ReadFromBytes, AddressInfo, ProcessQuery};
 
 pub fn read_memory<T: ReadFromBytes>(pid: i32, address: usize) -> BetrayalResult<(AddressInfo, T)> {
-    ProcessQuery::<T>::read_at(pid, address).map(|(info, _address, value)| (info, value))
+    ProcessQuery::<T>::new(pid).read_at(pid, address).map(|(info, _address, value)| (info, value))
 }
 
 #[derive(Serialize, Deserialize, Debug)]

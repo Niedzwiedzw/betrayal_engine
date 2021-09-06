@@ -16,9 +16,6 @@ pub fn run(pid: i32) -> BetrayalResult<()> {
         to_string(&Config::default()).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
     write!(tempfile, "{}", config).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
 
-    let editor = std::env::var("EDITOR").map_err(|e| {
-        BetrayalError::ConfigFileError(format!("EDITOR env var is required :: {}", e))
-    })?;
     // set correct permissions
     let path = PathBuf::from(tempfile.path().clone());
     {
@@ -27,14 +24,6 @@ pub fn run(pid: i32) -> BetrayalResult<()> {
         std::fs::set_permissions(&path, perms).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
     }
     println!(" :: edit [{:?}] file and see the live output", path);
-
-    let path_for_editor = path.clone();
-    // let editor_task = std::thread::spawn(|| {
-    //     std::process::Command::new(editor)
-    //         .arg(path_for_editor)
-    //         .output()
-    //         .map_err(|e| BetrayalError::ConfigFileError(format!("editor closed :: {}", e)))
-    // });
 
     let (tx, rx) = channel();
 

@@ -12,8 +12,14 @@ use commands::{Command, HELP_TEXT};
 use itertools::Itertools;
 use neighbour_values::NeighbourValuesQuery;
 use parking_lot::Mutex;
+use petgraph::data::Build;
+use petgraph::dot::Dot;
+use petgraph::graph::NodeIndex;
+use petgraph::visit::{Dfs, EdgeIndexable};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::convert::{TryFrom, TryInto};
+use std::ops::Index;
 use std::path::PathBuf;
 use std::thread::JoinHandle;
 use std::{collections::BTreeMap, fs::File, io::Write, path::Path, str::FromStr, sync::Arc};
@@ -109,6 +115,7 @@ pub type CurrentQueryResults<T: ReadFromBytes> = BTreeMap<usize, AddressValue<T>
 pub struct ProcessQuery<T: ReadFromBytes> {
     pub pid: i32,
     pub results: CurrentQueryResults<T>,
+    pub mappings: Vec<(AddressInfo, Map)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,31 +164,90 @@ pub struct StaticLocation {
 }
 
 impl AddressInfo {
-    pub fn from_address(pid: i32, address: usize) -> BetrayalResult<Self> {
-        let (info, _map) = ProcessQuery::<u8>::mappings_all(pid)?
+    pub fn from_address<T: memory::ReadFromBytes>(
+        process: &ProcessQuery<T>,
+        pid: i32,
+        address: usize,
+    ) -> BetrayalResult<Self> {
+        let (info, _map) = process
+            .mappings()?
             .into_iter()
             .find(|(_info, map)| map.base <= address && address < map.ceiling)
             .ok_or(BetrayalError::PartialRead)?;
-        Ok(info)
+        Ok(info.clone())
     }
 
     pub fn is_static(&self) -> bool {
         !self.writable
     }
 
+    /// file with permission RW, either with a name, or directly following a named map (without a gap!!)
     pub fn static_location(&self, pid: i32, address: usize) -> Option<StaticLocation> {
-        if !self.is_static() {
+        use procmaps::Path;
+        if !self.writable {
             return None;
         }
-        let (_info, map) = ProcessQuery::<u8>::mappings_all(pid).ok()?.into_iter()
-            .find(|(_info, map)| map.base <= address && address < map.ceiling)?;
+        let maps = ProcessQuery::<u8>::mappings_all(pid).ok()?;
 
-        let path = map.pathname;
+        // let a = match maps
+        //     .iter()
+        //     .find_position(|(_info, map)| map.base <= address && address < map.ceiling)
+        // {
+        //     Some((map_index, (info, map))) => {
+        //         let name = match &map.pathname {
+        //             Path::MappedFile(name) if name == "" => {
+        //                 let maps = maps.iter().take(map_index - 1).rev().collect::<Vec<_>>();
+        //                 let continous_mappings = maps
+        //                     .iter()
+        //                     .zip(maps.iter().skip(1))
+        //                     .take_while(|((_, curr), (_, next))| curr.base == next.ceiling)
+        //                     .map(|((_, curr), (_, _))| curr);
+        //                 let static_address = continous_mappings.group_by(|m| m.pathname).into_iter().next().map(|(_, v)| v)?.last()?;
+        //             }
+        //             Path::MappedFile(name) => name,
+        //             _ => None,
+        //         }?;
+        //     }
+        //     _ => None,
+        // }?;
+
+        let slice_index = match maps
+            .iter()
+            .find_position(|(_info, map)| map.base <= address && address < map.ceiling)
+        {
+            Some((map_index, (_, map))) => match &map.pathname {
+                Path::MappedFile(name)
+                    if name == "" && map.base == maps.get(map_index - 1)?.1.ceiling =>
+                {
+                    // this is a .bss, we start one address up
+                    Some(map_index - 1)
+                }
+                Path::MappedFile(_) => Some(map_index), // this is a normal mapped file, still we need to offset it to allow for lookups
+                _ => None,
+            },
+            None => None,
+        }?;
+
+        let static_base = (&maps[..slice_index]) // omit later entries
+            .iter()
+            .rev() // go backwards
+            .collect::<Vec<_>>()
+            .iter()
+            .zip(maps.iter().skip(1)) // compare neighbours
+            .take_while(|((_, curr), (_, next))| curr.base == next.ceiling) // there can be no memory gap
+            .map(|((_, curr), (_, _))| curr)
+            .group_by(|m| &m.pathname) // chunks of maps with the same path
+            .into_iter()
+            .next()
+            .map(|(_, v)| v)?
+            .last()?;
+
+        let path = &static_base.pathname;
         match path {
             procmaps::Path::MappedFile(path) => Some(StaticLocation {
                 map_path: path.clone(),
-                base: map.base,
-                offset: address - map.base,
+                base: static_base.base,
+                offset: address - static_base.base,
             }),
             _ => None,
         }
@@ -196,22 +262,104 @@ impl From<&Map> for AddressInfo {
     }
 }
 
+pub fn find_equal_to<T: ReadFromBytes>(pid: i32, value: T) -> BetrayalResult<Vec<AddressValue<T>>> {
+    let mut process = ProcessQuery::<T>::new(pid);
+    process.perform_new_query(Filter::IsEqual(value))?;
+    Ok(process.results.into_iter().map(|(_k, v)| v).collect())
+}
+
+pub fn find_in_range<T: ReadFromBytes>(pid: i32, min: T, max: T) -> BetrayalResult<Vec<AddressValue<T>>> {
+    let mut process = ProcessQuery::<T>::new(pid);
+    process.perform_new_query(Filter::InRange((min, max)))?;
+    Ok(process.results.into_iter().map(|(_k, v)| v).collect())
+}
+
+use petgraph::graph::DiGraph;
+
+fn log_graph<T: ReadFromBytes + Serialize + TryFrom<usize>>(graph: &DiGraph<T, ()>) {
+    for edge in graph.node_indices() {
+        print!("[{}]", graph[edge]);
+        let mut dfs = petgraph::visit::Dfs::new(&graph, edge);
+
+        while let Some(visited) = dfs.next(&graph) {
+            print!(" -> {:?}", graph[visited]);
+        }
+        println!();
+    }
+
+    println!();
+}
+
+pub fn build_pointer_tree<T: 'static + ReadFromBytes + Serialize + TryFrom<usize>>(
+    pid: i32,
+    tree: Arc<Mutex<DiGraph<T, ()>>>,
+    current: Option<NodeIndex>,
+    addresses: Vec<T>,
+    depth: T,
+) -> BetrayalResult<()> {
+    let mut tasks = vec![];
+    for address in addresses {
+        let tree = Arc::clone(&tree);
+        let a = {
+            let mut tree = tree.lock();
+            log_graph(&tree);
+            let a = tree.add_node(address);
+            if let Some(current) = current {
+                tree.add_edge(a, current, ());
+            }
+            a
+        };
+
+        let addresses = find_in_range(pid, address - depth, address)?
+            .into_iter()
+            .filter_map(|(_, a, _)| a.try_into().ok())
+            .collect();
+        tasks.push(std::thread::spawn(move || {
+            build_pointer_tree(pid, tree, Some(a), addresses, depth)
+        }));
+    }
+    for task in tasks {
+        task.join().map_err(|e| {
+            BetrayalError::BadWrite(format!(
+                "thread crashed during pointer map building :: {:#?}",
+                e
+            ))
+        })??;
+    }
+    Ok(())
+}
+
+pub fn pointer_map<T: 'static + ReadFromBytes + Serialize + TryFrom<usize>>(
+    pid: i32,
+    address: T,
+    depth: T,
+) -> BetrayalResult<DiGraph<T, ()>> {
+    let graph = Default::default();
+    build_pointer_tree::<T>(pid, Arc::clone(&graph), None, vec![address], depth)?;
+    let graph = graph.lock().clone();
+    Ok(graph)
+}
+
 impl<T: ReadFromBytes> ProcessQuery<T> {
     pub fn new(pid: i32) -> Self {
         Self {
             pid,
             results: Default::default(),
+            mappings: Default::default(),
         }
     }
 
-    pub fn read_at(pid: i32, address: usize) -> BetrayalResult<AddressValue<T>> {
-        let (info, _map) = Self::mappings_all(pid)?
+    pub fn read_at(&mut self, pid: i32, address: usize) -> BetrayalResult<AddressValue<T>> {
+        if self.mappings.is_empty() {
+            self.update_mappings()?; // oof
+        }
+        let (info, _map) = self.mappings()?
             .into_iter()
             .find(|(info, m)| m.base <= address && address < m.ceiling)
             .ok_or(BetrayalError::PartialRead)?;
         let val = read_memory(pid, address, std::mem::size_of::<T>())?;
         Ok((
-            info,
+            info.clone(),
             address,
             T::read_value(val).map_err(|_e| BetrayalError::PartialRead)?,
         ))
@@ -228,17 +376,20 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
 
     pub fn update_results(&mut self) -> BetrayalResult<()> {
         let mut invalid_regions = vec![];
+        let mut results = self.results.clone();
         {
-            for (address, result) in self.results.iter_mut() {
-                match Self::read_at(self.pid, *address) {
+            for (address, result) in results.iter_mut() {
+                match self.read_at(self.pid, *address) {
                     Ok(val) => *result = val,
                     Err(_e) => invalid_regions.push(*address),
                 }
             }
         }
         for index in invalid_regions.into_iter().rev() {
-            self.results.remove(&index);
+            results.remove(&index);
         }
+        self.results = results;
+
         Ok(())
     }
 
@@ -296,14 +447,10 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
             .collect())
     }
 
-    fn mappings(&self) -> BetrayalResult<Vec<(AddressInfo, Map)>> {
-        Self::mappings_all(self.pid)
+    fn mappings(&self) -> BetrayalResult<Box<impl Iterator<Item = &(AddressInfo, Map)>>> {
+        Ok(Box::new(self.mappings.iter()))
     }
-    fn all_possible_addresses(&self) -> BetrayalResult<Box<impl Iterator<Item = i32>>> {
-        Ok(box self.mappings()?.into_iter().flat_map(|(_info, map)| {
-            (map.base as i32)..((map.ceiling as i32) - std::mem::size_of::<i32>() as i32)
-        }))
-    }
+
     pub fn in_address_space(&self, value: i32) -> BetrayalResult<bool> {
         Ok(self
             .mappings()?
@@ -311,14 +458,20 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
             .any(|(_info, map)| map.base as i32 <= value && value <= map.ceiling as i32))
     }
 
+    pub fn update_mappings(&mut self) -> BetrayalResult<()> {
+        self.mappings = Self::mappings_all(self.pid)?;
+        Ok(())
+    }
     fn query<'process, 'result>(
-        &'process self,
+        &'process mut self,
         filter: Filter<T>,
         // ) -> BetrayalResult<Box<impl Iterator<Item = QueryResult> + 'result>>
     ) -> BetrayalResult<Vec<AddressValue<T>>>
     where
         'process: 'result,
     {
+        self.update_mappings()?;
+
         let pid = self.pid;
         let mappings = self.mappings()?;
         let mappings: Vec<_> = mappings
@@ -334,7 +487,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
             let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
             let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base) {
                 Ok(m) => T::possible_values(&m[..], map.base)
-                    .map(|(address, value)| (info, address, value))
+                    .map(|(address, value)| (info.clone(), address, value))
                     .filter(|result| filter.clone().matches(*result, &dummy_results))
                     .collect(),
                 Err(_e) => {
@@ -392,7 +545,7 @@ async fn run<T: 'static + ReadFromBytes>(
                 }
                 Command::AddAddress(address) => {
                     let mut process = process.lock();
-                    let info = match AddressInfo::from_address(process.pid, address) {
+                    let info = match AddressInfo::from_address(&process, process.pid, address) {
                         Ok(v) => v,
                         Err(e) => {
                             eprintln!("error while adding address :: {}", e);
@@ -407,7 +560,7 @@ async fn run<T: 'static + ReadFromBytes>(
                 Command::AddAddressRange(start, end) => {
                     println!(" :: adding {} - {}", start, end);
                     let mut process = process.lock();
-                    let info = match AddressInfo::from_address(process.pid, start) {
+                    let info = match AddressInfo::from_address(&process, process.pid, start) {
                         Ok(v) => v,
                         Err(e) => {
                             eprintln!("error while adding address :: {}", e);
@@ -421,12 +574,39 @@ async fn run<T: 'static + ReadFromBytes>(
                     }
                     process.update_results()?;
                 }
+                Command::PointerMapU32(address, depth) => {
+                    println!(" :: building a pointer32 map for {}", address);
+                    let pid = { process.lock().pid };
+                    let mut map = match pointer_map::<u32>(pid, address, depth) {
+                        Ok(map) => map,
+                        Err(e) => {
+                            println!(" :: ERR :: {}", e);
+                            continue;
+                        }
+                    };
+                    println!(" :: SUCCESS ::",);
+                    log_graph(&mut map)
+                }
+                Command::PointerMapU64(address, depth) => {
+                    println!(" :: building a pointer64 map for {}", address);
+                    let pid = { process.lock().pid };
+                    let mut map = match pointer_map::<u64>(pid, address, depth) {
+                        Ok(map) => map,
+                        Err(e) => {
+                            println!(" :: ERR :: {}", e);
+                            continue;
+                        }
+                    };
+                    println!(" :: SUCCESS ::",);
+                    log_graph(&mut map)
+                }
             },
             Err(e) => {
                 eprintln!("{}", e);
                 continue;
             }
         };
+
         if process.lock().results.len() > 50 {
             println!(":: found {} matches", process.lock().results.len());
         } else {
@@ -439,15 +619,17 @@ async fn run<T: 'static + ReadFromBytes>(
                     address,
                     value,
                     match info.static_location(process.pid, *address) {
-                        Some(location) => format!("@STATIC[static_address(\"{}\")+{}] (raw: {} + {})", location.map_path, location.offset, location.base, location.offset),
-                        None => String::new()
-                    }
-                    // if info.is_static() {
-                    //     match 
-                    //     let location = info.static_location(process.pid, *address);
-                    //     format!("@STATIC()")
+                        Some(location) => format!(
+                            "@STATIC[static_address(PID,\"{}\")+{}] (raw: {} + {})",
+                            location.map_path, location.offset, location.base, location.offset
+                        ),
+                        None => String::new(),
+                    } // if info.is_static() {
+                      //     match
+                      //     let location = info.static_location(process.pid, *address);
+                      //     format!("@STATIC()")
 
-                    // } else { String::new() }
+                      // } else { String::new() }
                 );
             }
         }

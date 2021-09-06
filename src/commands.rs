@@ -13,6 +13,8 @@ pub enum Command<T: ReadFromBytes> {
     Help,
     AddAddress(usize),
     AddAddressRange(usize, usize),
+    PointerMapU32(u32, u32),
+    PointerMapU64(u64, u64),
 }
 
 
@@ -30,17 +32,18 @@ author: wojciech.brozek@niedzwiedz.it
 github: https://github.com/Niedzwiedzw/betratal_engine
 
 COMMANDS:
-""                       -> refreshes current results
-"a <address> <address?>  -> adds address to the list (or range of addresses if second argument is present)
-"q"                      -> quits the program
-"h" or "?" or "help"     -> prints this help message
-"w <index> <value>"      -> writes a specified value to address at results
-"n <window_size> 1 2 14" -> lists all possible windows of <window_size> that contain 1 2 and 14 in no specific order, useful for finding structs
-"k <index> <value>"      -> same as "w" but does that in a loop so that value stays the same (god mode etc)
-"f u"                    -> a NO-OP filter, for new scans it will match all the values (very memory intensive), equivalent to refresh for subsequent scans
-"f e 2137"               -> finds values equal to 2137
-"f c 15"                 -> finds values that changed by 15 compared to previous scan (does nothing for initial scan)
-"f r 15 300"             -> finds values between 15 and 300
+""                               -> refreshes current results
+"a <address> <address?>          -> adds address to the list (or range of addresses if second argument is present)
+"q"                              -> quits the program
+"h" or "?" or "help"             -> prints this help message
+"w <index> <value>"              -> writes a specified value to address at results
+"n <window_size> 1 2 14"         -> lists all possible windows of <window_size> that contain 1 2 and 14 in no specific order, useful for finding structs
+"k <index> <value>"              -> same as "w" but does that in a loop so that value stays the same (god mode etc)
+"f u"                            -> a NO-OP filter, for new scans it will match all the values (very memory intensive), equivalent to refresh for subsequent scans
+"f e 2137"                       -> finds values equal to 2137
+"f c 15"                         -> finds values that changed by 15 compared to previous scan (does nothing for initial scan)
+"f r 15 300"                     -> finds values between 15 and 300
+"p m <u32/u64> <address> <depth> -> displays a pointer map for a given address (either 32 or 64 bit wide), depth affects performance
 
 FIND OUT WHAT WRITES TO THIS ADDRESS:
 not implemented, use gdb (gnu debugger)
@@ -83,6 +86,8 @@ fn command_parser<T: ReadFromBytes>(i: &str) -> BetrayalResult<Command<T>> {
             parse_or_bad_command!(start),
             parse_or_bad_command!(end),
         )))),
+        ["p", "m", "u32", address, depth] => Ok(Command::PointerMapU32(parse_or_bad_command!(address), parse_or_bad_command!(depth))),
+        ["p", "m", "u64", address, depth] => Ok(Command::PointerMapU64(parse_or_bad_command!(address), parse_or_bad_command!(depth))),
         _ => Err(BetrayalError::BadCommand("command not found".to_string())),
     }
 }

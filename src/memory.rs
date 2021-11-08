@@ -68,7 +68,6 @@ macro_rules! read_from_bytes_impl {
                 memory: &'a [u8],
                 base: usize,
             ) -> Box<dyn Iterator<Item = AddressEntry<$SelfT>> + 'a> {
-                
                 Box::new(
                     (0..(memory.len() - std::mem::size_of::<$SelfT>())).filter_map(move |start| {
                         Some((

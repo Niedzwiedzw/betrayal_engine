@@ -187,30 +187,7 @@ impl AddressInfo {
         if !self.writable {
             return None;
         }
-        let maps = ProcessQuery::<u8>::mappings_all(pid).ok()?;
-
-        // let a = match maps
-        //     .iter()
-        //     .find_position(|(_info, map)| map.base <= address && address < map.ceiling)
-        // {
-        //     Some((map_index, (info, map))) => {
-        //         let name = match &map.pathname {
-        //             Path::MappedFile(name) if name == "" => {
-        //                 let maps = maps.iter().take(map_index - 1).rev().collect::<Vec<_>>();
-        //                 let continous_mappings = maps
-        //                     .iter()
-        //                     .zip(maps.iter().skip(1))
-        //                     .take_while(|((_, curr), (_, next))| curr.base == next.ceiling)
-        //                     .map(|((_, curr), (_, _))| curr);
-        //                 let static_address = continous_mappings.group_by(|m| m.pathname).into_iter().next().map(|(_, v)| v)?.last()?;
-        //             }
-        //             Path::MappedFile(name) => name,
-        //             _ => None,
-        //         }?;
-        //     }
-        //     _ => None,
-        // }?;
-
+        let maps = ProcessQuery::<u8>::mappings_all_with_unreadable(pid).ok()?;
         let slice_index = match maps
             .iter()
             .find_position(|(_info, map)| map.base <= address && address < map.ceiling)
@@ -228,13 +205,23 @@ impl AddressInfo {
             None => None,
         }?;
 
-        let static_base = (&maps[..slice_index]) // omit later entries
+        let maps = (&maps[..(slice_index + 1)]) // omit later entries
             .iter()
+            .sorted_by_key(|(_, m)| m.base)
             .rev() // go backwards
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        let static_base = maps
             .iter()
             .zip(maps.iter().skip(1)) // compare neighbours
+            .inspect(|((_, curr), (_, next))| {
+                // println!(
+                //     "({:x} - {:x}) :: {:?}\n({:x} - {:x}) :: {:?}",
+                //     curr.base, curr.ceiling, curr.pathname, next.base, next.ceiling, next.pathname
+                // )
+            })
             .take_while(|((_, curr), (_, next))| curr.base == next.ceiling) // there can be no memory gap
+            .collect::<Vec<_>>()
+            .into_iter()
             .map(|((_, curr), (_, _))| curr)
             .group_by(|m| &m.pathname) // chunks of maps with the same path
             .into_iter()
@@ -268,7 +255,11 @@ pub fn find_equal_to<T: ReadFromBytes>(pid: i32, value: T) -> BetrayalResult<Vec
     Ok(process.results.into_iter().map(|(_k, v)| v).collect())
 }
 
-pub fn find_in_range<T: ReadFromBytes>(pid: i32, min: T, max: T) -> BetrayalResult<Vec<AddressValue<T>>> {
+pub fn find_in_range<T: ReadFromBytes>(
+    pid: i32,
+    min: T,
+    max: T,
+) -> BetrayalResult<Vec<AddressValue<T>>> {
     let mut process = ProcessQuery::<T>::new(pid);
     process.perform_new_query(Filter::InRange((min, max)))?;
     Ok(process.results.into_iter().map(|(_k, v)| v).collect())
@@ -276,13 +267,14 @@ pub fn find_in_range<T: ReadFromBytes>(pid: i32, min: T, max: T) -> BetrayalResu
 
 use petgraph::graph::DiGraph;
 
-fn log_graph<T: ReadFromBytes + Serialize + TryFrom<usize>>(graph: &DiGraph<T, ()>) {
+fn log_graph<T: ReadFromBytes + Serialize + TryFrom<usize>>(graph: &DiGraph<T, ()>, pid: i32) {
     for edge in graph.node_indices() {
-        print!("[{}]", graph[edge]);
+        print!("[*]");
         let mut dfs = petgraph::visit::Dfs::new(&graph, edge);
 
         while let Some(visited) = dfs.next(&graph) {
-            print!(" -> {:?}", graph[visited]);
+            let address = graph[visited];
+            print!(" -> {:?}", address);
         }
         println!();
     }
@@ -302,7 +294,6 @@ pub fn build_pointer_tree<T: 'static + ReadFromBytes + Serialize + TryFrom<usize
         let tree = Arc::clone(&tree);
         let a = {
             let mut tree = tree.lock();
-            log_graph(&tree);
             let a = tree.add_node(address);
             if let Some(current) = current {
                 tree.add_edge(a, current, ());
@@ -353,7 +344,8 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         if self.mappings.is_empty() {
             self.update_mappings()?; // oof
         }
-        let (info, _map) = self.mappings()?
+        let (info, _map) = self
+            .mappings()?
             .into_iter()
             .find(|(info, m)| m.base <= address && address < m.ceiling)
             .ok_or(BetrayalError::PartialRead)?;
@@ -426,14 +418,12 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         Ok(())
     }
 
-    pub fn mappings_all(pid: i32) -> BetrayalResult<Vec<(AddressInfo, Map)>> {
-        let mut mappings = std::mem::take(
+    pub fn mappings_all_with_unreadable(pid: i32) -> BetrayalResult<Vec<(AddressInfo, Map)>> {
+        let mappings = std::mem::take(
             procmaps::Mappings::from_pid(pid)
                 .map_err(|_e| BetrayalError::BadPid)?
                 .deref_mut(),
         );
-
-        mappings.retain(|m| m.perms.readable);
         Ok(mappings
             .into_iter()
             .map(|m| {
@@ -444,6 +434,12 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
                     m,
                 )
             })
+            .collect())
+    }
+
+    pub fn mappings_all(pid: i32) -> BetrayalResult<Vec<(AddressInfo, Map)>> {
+        Ok(Self::mappings_all_with_unreadable(pid)?
+            .into_iter()
             .collect())
     }
 
@@ -507,7 +503,8 @@ async fn run<T: 'static + ReadFromBytes>(
     pid: i32,
     tasks: &mut Vec<JoinHandle<()>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let process = ProcessQuery::<T>::new(pid);
+    let mut process = ProcessQuery::<T>::new(pid);
+    process.update_mappings()?;
     let process = Arc::new(Mutex::new(process));
     println!("{}", HELP_TEXT);
     println!(" :: running in [{}] mode", std::any::type_name::<T>());
@@ -585,7 +582,7 @@ async fn run<T: 'static + ReadFromBytes>(
                         }
                     };
                     println!(" :: SUCCESS ::",);
-                    log_graph(&mut map)
+                    log_graph(&mut map, pid)
                 }
                 Command::PointerMapU64(address, depth) => {
                     println!(" :: building a pointer64 map for {}", address);
@@ -598,7 +595,7 @@ async fn run<T: 'static + ReadFromBytes>(
                         }
                     };
                     println!(" :: SUCCESS ::",);
-                    log_graph(&mut map)
+                    log_graph(&mut map, pid)
                 }
             },
             Err(e) => {

@@ -1,16 +1,27 @@
 use crate::{
     error::{BetrayalError, BetrayalResult},
-    reclass::config_file::{Config, ReclassStruct},
+    reclass::{
+        config_file::{Config, ReclassStruct},
+        display::Printable,
+    },
 };
-use std::{fs::{Permissions, read_to_string}, io::{BufWriter, Write}, path::PathBuf, process::Command, time::Duration};
-use std::os::unix::fs::PermissionsExt;
-use notify::{DebouncedEvent, RawEvent, RecursiveMode, Watcher, raw_watcher, watcher};
+use notify::{raw_watcher, watcher, DebouncedEvent, RawEvent, RecursiveMode, Watcher};
 use serde_yaml::{from_str, to_string};
+use std::os::unix::fs::PermissionsExt;
 use std::sync::mpsc::channel;
+use std::{
+    fs::{read_to_string, Permissions},
+    io::{BufWriter, Write},
+    path::PathBuf,
+    process::Command,
+    time::Duration,
+};
 
 pub fn run(pid: i32) -> BetrayalResult<()> {
     println!("running reclass");
-    let mut tempfile = tempfile::Builder::new().suffix(".yaml").tempfile()
+    let mut tempfile = tempfile::Builder::new()
+        .suffix(".yaml")
+        .tempfile()
         .map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
     let config =
         to_string(&Config::default()).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
@@ -19,9 +30,12 @@ pub fn run(pid: i32) -> BetrayalResult<()> {
     // set correct permissions
     let path = PathBuf::from(tempfile.path().clone());
     {
-        let mut perms = std::fs::metadata(&path).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?.permissions();
+        let mut perms = std::fs::metadata(&path)
+            .map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?
+            .permissions();
         perms.set_mode(0o666);
-        std::fs::set_permissions(&path, perms).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
+        std::fs::set_permissions(&path, perms)
+            .map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
     }
     println!(" :: edit [{:?}] file and see the live output", path);
 
@@ -44,32 +58,29 @@ pub fn run(pid: i32) -> BetrayalResult<()> {
     loop {
         match rx.recv() {
             Ok(DebouncedEvent::Write(_)) => {
-                let config = read_to_string(&path).map_err(|e| BetrayalError::ConfigFileError(format!("failed to read config file :: {}", e)))?;
+                let config = read_to_string(&path).map_err(|e| {
+                    BetrayalError::ConfigFileError(format!("failed to read config file :: {}", e))
+                })?;
                 match from_str::<Config>(&config) {
                     Ok(c) => {
                         let result = c.result(pid);
                         match result {
-                            Ok(result) => {
-                                match to_string(&result) {
-                                    Ok(r) => println!("{}", r),
-                                    Err(e) => eprintln!("ERROR: {}", e.to_string()),
-                                }
-                            },
+                            Ok(result) => println!("{}", result.print(0)),
                             Err(e) => {
                                 eprintln!("ERROR: \n {}", e.to_string())
                             }
                         }
-                    },
+                    }
                     Err(e) => {
                         eprintln!("bad format :: {}", e)
                     }
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("watch error: {:?}", e);
                 break;
-            },
-            _ => {},
+            }
+            _ => {}
         }
     }
 

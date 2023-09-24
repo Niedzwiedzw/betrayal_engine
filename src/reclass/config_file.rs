@@ -1,13 +1,15 @@
-use serde::{Deserialize, Serialize};
-use std::{convert::TryInto};
-use indexmap::IndexMap;
 use crate::{error::BetrayalResult, memory::ReadFromBytes, AddressInfo, ProcessQuery};
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashSet, convert::TryInto};
 
 pub fn read_memory<T: ReadFromBytes>(pid: i32, address: usize) -> BetrayalResult<(AddressInfo, T)> {
-    ProcessQuery::<T>::new(pid).read_at(pid, address).map(|(info, _address, value)| (info, value))
+    ProcessQuery::<T>::new(pid)
+        .read_at(pid, address)
+        .map(|(info, _address, value)| (info, value))
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Field {
     Padding(usize),
     U8,
@@ -22,6 +24,7 @@ pub enum Field {
     Pointer32(Box<Self>),
     Pointer64(Box<Self>),
     Struct(ReclassStruct),
+    SearchValues(Vec<(Field, String)>),
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -109,6 +112,7 @@ impl Field {
             Field::U32 => std::mem::size_of::<u32>(),
             Field::I64 => std::mem::size_of::<i64>(),
             Field::U64 => std::mem::size_of::<u64>(),
+            Field::SearchValues(v) => 0,
         }
     }
 
@@ -145,11 +149,63 @@ impl Field {
             Field::Struct(reclass_struct) => {
                 FieldResult::ReclassStruct(reclass_struct.result(pid, address))
             }
+            Field::SearchValues(fields) => {
+                let mut fields = fields.clone();
+                let mut last_result = FieldResult::Padding(0);
+                println!(" --- searching ");
+                for offset in 0..1000usize {
+                    print!(".");
+                    let search_address = address + offset;
+                    for (_field_idx, (field, value)) in fields.iter().enumerate().rev() {
+                        let result = field.clone().result(pid, search_address);
+                        match result.compare_value() {
+                            Some(v) if &v == value => {
+                                println!("\n\nfound! addres: {address} + Padding({offset})\n");
+                                return result.into();
+                            }
+                            _ => {
+                                last_result = result;
+                            }
+                        }
+                    }
+                }
+                last_result.into()
+            }
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+impl FieldResult {
+    pub fn compare_value(&self) -> Option<String> {
+        match self {
+            FieldResult::U16(v) => v.compare_value(),
+            FieldResult::I16(v) => v.compare_value(),
+            FieldResult::U32(v) => v.compare_value(),
+            FieldResult::I32(v) => v.compare_value(),
+            FieldResult::U64(v) => v.compare_value(),
+            FieldResult::I64(v) => v.compare_value(),
+            FieldResult::U8(v) => v.compare_value(),
+            FieldResult::F32(v) => v.compare_value(),
+            FieldResult::F64(v) => v.compare_value(),
+            FieldResult::Pointer32(v, _) => Some(v.to_string()),
+            FieldResult::Pointer64(v, _) => Some(v.to_string()),
+            FieldResult::ReclassStruct(_) => None,
+            FieldResult::Padding(_) => None,
+        }
+    }
+}
+
+impl<T: std::fmt::Display> ValueResult<T> {
+    pub fn compare_value(&self) -> Option<String> {
+        match self {
+            ValueResult::Ok(_, v) => Some(v.to_string()),
+            ValueResult::Err(_) => None,
+            ValueResult::Padding(_) => None,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ReclassStruct {
     pub name: String,
     pub fields: IndexMap<String, Field>,
@@ -216,7 +272,6 @@ impl ConfigEntry {
         })
     }
 }
-
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ConfigEntryResult {

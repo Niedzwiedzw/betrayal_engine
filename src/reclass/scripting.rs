@@ -78,8 +78,8 @@ pub fn calculate_address(pid: i32, script: &str) -> BetrayalResult<usize> {
     constant!(scope, I32);
     constant!(scope, I16);
     constant!(scope, U8);
-    constant!(scope, F32);
-    constant!(scope, F64);
+    // constant!(scope, F32);
+    // constant!(scope, F64);
 
     try_cast_to_usize::<i16>(&engine, scope.clone(), script)
         .or(try_cast_to_usize::<i32>(&engine, scope.clone(), script))

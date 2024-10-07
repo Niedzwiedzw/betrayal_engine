@@ -20,6 +20,7 @@ pub trait ReadFromBytes:
     + PartialOrd
     + Add<Output = Self>
     + Sub<Output = Self>
+    + Ord
     + Copy
     + Sync
     + Send
@@ -99,5 +100,5 @@ read_from_bytes_impl!(i64, read_i64, write_i64);
 read_from_bytes_impl!(u64, read_u64, write_u64);
 read_from_bytes_impl!(i16, read_i16, write_i16);
 read_from_bytes_impl!(u16, read_u16, write_u16);
-read_from_bytes_impl!(f32, read_f32, write_f32);
-read_from_bytes_impl!(f64, read_f64, write_f64);
+// read_from_bytes_impl!(f32, read_f32, write_f32);
+// read_from_bytes_impl!(f64, read_f64, write_f64);

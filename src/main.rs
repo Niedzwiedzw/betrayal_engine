@@ -1,5 +1,3 @@
-#![feature(box_syntax)]
-
 pub mod commands;
 pub mod helpers;
 pub mod memory;
@@ -18,6 +16,7 @@ use petgraph::graph::NodeIndex;
 use petgraph::visit::{Dfs, EdgeIndexable};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::convert::{TryFrom, TryInto};
 use std::ops::Index;
 use std::path::PathBuf;
@@ -125,6 +124,7 @@ pub enum Filter<T: ReadFromBytes> {
     Any,
     ChangedBy(T),
     InAddressRanges(Vec<(usize, usize)>),
+    IsInValueBox(usize, usize, BTreeSet<T>),
 }
 
 pub type Writer<T: ReadFromBytes> = (usize, T);
@@ -148,6 +148,10 @@ impl<T: ReadFromBytes> Filter<T> {
             Self::InAddressRanges(ranges) => ranges
                 .iter()
                 .any(|(base, ceiling)| base <= &address && &address <= ceiling),
+            
+            Self::IsInValueBox(base, ceiling, values) => {
+                (base <= address && address <= ceiling) && values.contains(&current_value)
+            },
         }
     }
 }
@@ -597,6 +601,9 @@ async fn run<T: 'static + ReadFromBytes>(
                     println!(" :: SUCCESS ::",);
                     log_graph(&mut map, pid)
                 }
+                Command::FindValuesInBox(start, end, values) => {
+                    process.lock().perform_query(Filter::IsInValueBox(start ,end, values.into_iter().collect()))?
+                },
             },
             Err(e) => {
                 eprintln!("{}", e);
@@ -652,15 +659,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .long("pid")
                 .value_name("INT")
                 .required(true)
-                .about("PID of the process you're interested in analyzing"),
+                .help("PID of the process you're interested in analyzing"),
         )
         .arg(
             Arg::new("variable_type")
                 .short('t')
                 .long("variable_type")
-                .value_name("u8 | u16 | u16 | i32 | u32 | i64 | u64 | f32 | f64")
+                .value_name("u8 | u16 | u16 | i32 | u32 | i64 | u64")
                 .default_value("i32")
-                .about("currently you need to specify the format up front and only use that until the end of the program. but hey, you can always run multiple instances of this thing. oh yeah and i32 is 32 bits signed, equivalent of 4 bytes in other software"),
+                .help("currently you need to specify the format up front and only use that until the end of the program. but hey, you can always run multiple instances of this thing. oh yeah and i32 is 32 bits signed, equivalent of 4 bytes in other software"),
         )
         .get_matches();
     let pid = matches.value_of_t_or_exit("pid");
@@ -679,8 +686,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "u32" => run::<u32>(pid, &mut tasks).await?,
             "i64" => run::<i64>(pid, &mut tasks).await?,
             "u64" => run::<u64>(pid, &mut tasks).await?,
-            "f32" => run::<f32>(pid, &mut tasks).await?,
-            "f64" => run::<f64>(pid, &mut tasks).await?,
+            // "f32" => run::<f32>(pid, &mut tasks).await?,
+            // "f64" => run::<f64>(pid, &mut tasks).await?,
             _ => panic!("unsupported variable type"),
         },
         None => {

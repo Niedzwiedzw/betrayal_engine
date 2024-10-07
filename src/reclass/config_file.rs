@@ -19,8 +19,8 @@ pub enum Field {
     U32,
     I64,
     U64,
-    F32,
-    F64,
+    // F32,
+    // F64,
     Pointer32(Box<Self>),
     Pointer64(Box<Self>),
     Struct(ReclassStruct),
@@ -103,8 +103,8 @@ impl Field {
             Field::I32 => std::mem::size_of::<i32>(),
             Field::I16 => std::mem::size_of::<i16>(),
             Field::U8 => std::mem::size_of::<u8>(),
-            Field::F32 => std::mem::size_of::<f32>(),
-            Field::F64 => std::mem::size_of::<f64>(),
+            // Field::F32 => std::mem::size_of::<f32>(),
+            // Field::F64 => std::mem::size_of::<f64>(),
             Field::Pointer32(_) => std::mem::size_of::<u32>(),
             Field::Pointer64(_) => std::mem::size_of::<u64>(),
             Field::Struct(_) => 0,
@@ -126,8 +126,8 @@ impl Field {
             Field::U32 => FieldResult::U32(read_memory::<u32>(pid, address).into()),
             Field::I64 => FieldResult::I64(read_memory::<i64>(pid, address).into()),
             Field::U64 => FieldResult::U64(read_memory::<u64>(pid, address).into()),
-            Field::F32 => FieldResult::F32(read_memory::<f32>(pid, address).into()),
-            Field::F64 => FieldResult::F64(read_memory::<f64>(pid, address).into()),
+            // Field::F32 => FieldResult::F32(read_memory::<f32>(pid, address).into()),
+            // Field::F64 => FieldResult::F64(read_memory::<f64>(pid, address).into()),
             Field::Pointer32(field) => FieldResult::Pointer32(
                 address,
                 match read_memory::<u32>(pid, address) {
@@ -323,7 +323,7 @@ impl Default for ReclassStruct {
                     "field_7".to_string(),
                     Field::Pointer64(Box::new(Field::Struct(Self {
                         name: "SomeInnerClass".to_string(),
-                        fields: std::iter::once(("field_1".to_string(), Field::F64))
+                        fields: std::iter::once(("field_1".to_string(), Field::U16))
                             .chain(std::iter::once((
                                 "field_2".to_string(),
                                 Field::Padding(2137),

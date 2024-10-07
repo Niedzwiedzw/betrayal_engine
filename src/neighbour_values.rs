@@ -1,4 +1,4 @@
-use crate::{AddressValue, ProcessQuery, error::{BetrayalError, BetrayalResult}, memory::ReadFromBytes};
+use crate::{AddressValue, memory::ReadFromBytes};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NeighbourValuesQuery<T: ReadFromBytes> {

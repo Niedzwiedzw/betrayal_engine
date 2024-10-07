@@ -1,19 +1,18 @@
 use crate::{
     error::{BetrayalError, BetrayalResult},
     reclass::{
-        config_file::{Config, ReclassStruct},
+        config_file::Config,
         display::Printable,
     },
 };
-use notify::{raw_watcher, watcher, DebouncedEvent, RawEvent, RecursiveMode, Watcher};
+use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
 use serde_yaml::{from_str, to_string};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::mpsc::channel;
 use std::{
-    fs::{read_to_string, Permissions},
-    io::{BufWriter, Write},
+    fs::read_to_string,
+    io::Write,
     path::PathBuf,
-    process::Command,
     time::Duration,
 };
 
@@ -28,7 +27,7 @@ pub fn run(pid: i32) -> BetrayalResult<()> {
     write!(tempfile, "{}", config).map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?;
 
     // set correct permissions
-    let path = PathBuf::from(tempfile.path().clone());
+    let path = PathBuf::from(tempfile.path());
     {
         let mut perms = std::fs::metadata(&path)
             .map_err(|e| BetrayalError::ConfigFileError(e.to_string()))?

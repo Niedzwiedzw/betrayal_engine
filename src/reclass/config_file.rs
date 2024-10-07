@@ -1,7 +1,7 @@
 use crate::{error::BetrayalResult, memory::ReadFromBytes, AddressInfo, ProcessQuery};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, convert::TryInto};
+use std::convert::TryInto;
 
 pub fn read_memory<T: ReadFromBytes>(pid: i32, address: usize) -> BetrayalResult<(AddressInfo, T)> {
     ProcessQuery::<T>::new(pid)
@@ -150,7 +150,7 @@ impl Field {
                 FieldResult::ReclassStruct(reclass_struct.result(pid, address))
             }
             Field::SearchValues(fields) => {
-                let mut fields = fields.clone();
+                let fields = fields.clone();
                 let mut last_result = FieldResult::Padding(0);
                 println!(" --- searching ");
                 for offset in 0..1000usize {

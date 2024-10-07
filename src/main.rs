@@ -5,21 +5,16 @@ pub mod neighbour_values;
 pub mod reclass;
 use crate::memory::ReadFromBytes;
 
-use clap::{crate_version, App, Arg, Subcommand};
+use clap::{crate_version, App, Arg};
 use commands::{Command, HELP_TEXT};
 use itertools::Itertools;
-use neighbour_values::NeighbourValuesQuery;
 use parking_lot::Mutex;
 use petgraph::data::Build;
-use petgraph::dot::Dot;
 use petgraph::graph::NodeIndex;
-use petgraph::visit::{Dfs, EdgeIndexable};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::convert::{TryFrom, TryInto};
-use std::ops::Index;
-use std::path::PathBuf;
 use std::thread::JoinHandle;
 use std::{collections::BTreeMap, fs::File, io::Write, path::Path, str::FromStr, sync::Arc};
 use std::{
@@ -35,7 +30,6 @@ use nix::{
 use error::{BetrayalError, BetrayalResult};
 use procmaps::{self, Map};
 
-use crate::neighbour_values::NeighbourValues;
 mod error;
 mod process;
 
@@ -101,14 +95,14 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
     }
 }
 
-pub type AddressValue<T: ReadFromBytes> = (AddressInfo, usize, T);
+pub type AddressValue<T> = (AddressInfo, usize, T);
 
 // #[derive(Debug)]
 // pub enum AddressValueAs {
 //     I32(AddressValue<i32>),
 // }
 
-pub type CurrentQueryResults<T: ReadFromBytes> = BTreeMap<usize, AddressValue<T>>;
+pub type CurrentQueryResults<T> = BTreeMap<usize, AddressValue<T>>;
 
 #[derive(Debug)]
 pub struct ProcessQuery<T: ReadFromBytes> {
@@ -127,7 +121,7 @@ pub enum Filter<T: ReadFromBytes> {
     IsInValueBox(usize, usize, BTreeSet<T>),
 }
 
-pub type Writer<T: ReadFromBytes> = (usize, T);
+pub type Writer<T> = (usize, T);
 
 impl<T: ReadFromBytes> Filter<T> {
     pub fn matches(

@@ -31,6 +31,7 @@ petgraph = { version = "0.6.0", features = ["serde-1"] }
 serde_json = "1.0.66"
 async-recursion = "0.3.2"
 extension-traits = "2.0.0"
+ordered-float = "4.5.0"
 
 [dependencies.rhai]
 version = "1.0.1"

@@ -13,6 +13,7 @@ use {
         sys::uio::{process_vm_readv, process_vm_writev, IoVec, RemoteIoVec},
         unistd::Pid,
     },
+    ordered_float::OrderedFloat,
     parking_lot::Mutex,
     petgraph::{data::Build, graph::NodeIndex},
     procmaps::{self, Map},
@@ -648,8 +649,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "u32" => run::<u32>(pid, &mut tasks).await?,
             "i64" => run::<i64>(pid, &mut tasks).await?,
             "u64" => run::<u64>(pid, &mut tasks).await?,
-            "f32" => run::<f32>(pid, &mut tasks).await?,
-            "f64" => run::<f64>(pid, &mut tasks).await?,
+            "f32" => run::<OrderedFloat<f32>>(pid, &mut tasks).await?,
+            "f64" => run::<OrderedFloat<f64>>(pid, &mut tasks).await?,
             _ => panic!("unsupported variable type"),
         },
         None => {

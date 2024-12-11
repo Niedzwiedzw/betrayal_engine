@@ -1,6 +1,6 @@
 [package]
 name = "betrayal_engine"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["niedzwiedzw <niedzwiedzwo@gmail.com>"]
 edition = "2018"
 
@@ -30,6 +30,7 @@ indexmap = { version = "1.7.0", features = ["serde-1"] }
 petgraph = { version = "0.6.0", features = ["serde-1"] }
 serde_json = "1.0.66"
 async-recursion = "0.3.2"
+extension-traits = "2.0.0"
 
 [dependencies.rhai]
 version = "1.0.1"

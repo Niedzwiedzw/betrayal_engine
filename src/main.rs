@@ -3,32 +3,33 @@ pub mod helpers;
 pub mod memory;
 pub mod neighbour_values;
 pub mod reclass;
-use crate::memory::ReadFromBytes;
-
-use clap::{crate_version, App, Arg};
-use commands::{Command, HELP_TEXT};
-use itertools::Itertools;
-use parking_lot::Mutex;
-use petgraph::data::Build;
-use petgraph::graph::NodeIndex;
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
-use std::convert::{TryFrom, TryInto};
-use std::thread::JoinHandle;
-use std::{collections::BTreeMap, fs::File, io::Write, path::Path, str::FromStr, sync::Arc};
-use std::{
-    io::{self, BufRead},
-    ops::DerefMut,
+use {
+    crate::memory::ReadFromBytes,
+    clap::{crate_version, App, Arg},
+    commands::{Command, HELP_TEXT},
+    error::{BetrayalError, BetrayalResult},
+    itertools::Itertools,
+    nix::{
+        sys::uio::{process_vm_readv, process_vm_writev, IoVec, RemoteIoVec},
+        unistd::Pid,
+    },
+    parking_lot::Mutex,
+    petgraph::{data::Build, graph::NodeIndex},
+    procmaps::{self, Map},
+    rayon::prelude::*,
+    serde::{Deserialize, Serialize},
+    std::{
+        collections::{BTreeMap, BTreeSet},
+        convert::{TryFrom, TryInto},
+        fs::File,
+        io::{self, BufRead, Write},
+        ops::DerefMut,
+        path::Path,
+        str::FromStr,
+        sync::Arc,
+        thread::JoinHandle,
+    },
 };
-
-use nix::{
-    sys::uio::{process_vm_readv, process_vm_writev, IoVec, RemoteIoVec},
-    unistd::Pid,
-};
-
-use error::{BetrayalError, BetrayalResult};
-use procmaps::{self, Map};
 
 mod error;
 mod process;
@@ -57,11 +58,7 @@ pub fn read_memory(pid: i32, address: usize, bytes_requested: usize) -> Betrayal
         base: address,
         len: bytes_requested,
     };
-    let bytes_read = match process_vm_readv(
-        Pid::from_raw(pid),
-        &[IoVec::from_mut_slice(&mut buffer)],
-        &[remote],
-    ) {
+    let bytes_read = match process_vm_readv(Pid::from_raw(pid), &[IoVec::from_mut_slice(&mut buffer)], &[remote]) {
         Ok(bytes_read) => bytes_read,
         Err(_error) => {
             return Err(BetrayalError::PartialRead);
@@ -83,10 +80,7 @@ pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult
     match process_vm_writev(Pid::from_raw(pid), &[IoVec::from_slice(&buffer)], &[remote]) {
         Ok(bytes_written) => {
             if bytes_written != bytes_requested {
-                return Err(BetrayalError::BadWrite(format!(
-                    "bad write length: {} != {}",
-                    bytes_written, bytes_requested
-                )));
+                return Err(BetrayalError::BadWrite(format!("bad write length: {} != {}", bytes_written, bytes_requested)));
             } else {
                 Ok(())
             }
@@ -118,17 +112,13 @@ pub enum Filter<T: ReadFromBytes> {
     Any,
     ChangedBy(T),
     InAddressRanges(Vec<(usize, usize)>),
-    IsInValueBox(usize, usize, BTreeSet<T>),
+    IsInValueBox(usize, usize, Arc<BTreeSet<T>>),
 }
 
 pub type Writer<T> = (usize, T);
 
 impl<T: ReadFromBytes> Filter<T> {
-    pub fn matches(
-        self,
-        result: AddressValue<T>,
-        current_results: &CurrentQueryResults<T>,
-    ) -> bool {
+    pub fn matches(self, result: AddressValue<T>, current_results: &CurrentQueryResults<T>) -> bool {
         let (info, address, current_value) = result;
         match self {
             Self::IsEqual(v) => v == current_value,
@@ -142,10 +132,8 @@ impl<T: ReadFromBytes> Filter<T> {
             Self::InAddressRanges(ranges) => ranges
                 .iter()
                 .any(|(base, ceiling)| base <= &address && &address <= ceiling),
-            
-            Self::IsInValueBox(base, ceiling, values) => {
-                (base <= address && address <= ceiling) && values.contains(&current_value)
-            },
+
+            Self::IsInValueBox(base, ceiling, values) => (base <= address && address <= ceiling) && values.contains(&current_value),
         }
     }
 }
@@ -162,11 +150,7 @@ pub struct StaticLocation {
 }
 
 impl AddressInfo {
-    pub fn from_address<T: memory::ReadFromBytes>(
-        process: &ProcessQuery<T>,
-        pid: i32,
-        address: usize,
-    ) -> BetrayalResult<Self> {
+    pub fn from_address<T: memory::ReadFromBytes>(process: &ProcessQuery<T>, pid: i32, address: usize) -> BetrayalResult<Self> {
         let (info, _map) = process
             .mappings()?
             .into_iter()
@@ -191,9 +175,7 @@ impl AddressInfo {
             .find_position(|(_info, map)| map.base <= address && address < map.ceiling)
         {
             Some((map_index, (_, map))) => match &map.pathname {
-                Path::MappedFile(name)
-                    if name == "" && map.base == maps.get(map_index - 1)?.1.ceiling =>
-                {
+                Path::MappedFile(name) if name == "" && map.base == maps.get(map_index - 1)?.1.ceiling => {
                     // this is a .bss, we start one address up
                     Some(map_index - 1)
                 }
@@ -241,9 +223,14 @@ impl AddressInfo {
 
 impl From<&Map> for AddressInfo {
     fn from(m: &Map) -> Self {
-        Self {
-            writable: m.perms.writable,
-        }
+        Self { writable: m.perms.writable }
+    }
+}
+
+#[extension_traits::extension(pub trait MapExt)]
+impl Map {
+    fn contains(&self, addr: usize) -> bool {
+        self.base <= addr && addr <= self.ceiling
     }
 }
 
@@ -253,11 +240,7 @@ pub fn find_equal_to<T: ReadFromBytes>(pid: i32, value: T) -> BetrayalResult<Vec
     Ok(process.results.into_iter().map(|(_k, v)| v).collect())
 }
 
-pub fn find_in_range<T: ReadFromBytes>(
-    pid: i32,
-    min: T,
-    max: T,
-) -> BetrayalResult<Vec<AddressValue<T>>> {
+pub fn find_in_range<T: ReadFromBytes>(pid: i32, min: T, max: T) -> BetrayalResult<Vec<AddressValue<T>>> {
     let mut process = ProcessQuery::<T>::new(pid);
     process.perform_new_query(Filter::InRange((min, max)))?;
     Ok(process.results.into_iter().map(|(_k, v)| v).collect())
@@ -303,26 +286,16 @@ pub fn build_pointer_tree<T: 'static + ReadFromBytes + Serialize + TryFrom<usize
             .into_iter()
             .filter_map(|(_, a, _)| a.try_into().ok())
             .collect();
-        tasks.push(std::thread::spawn(move || {
-            build_pointer_tree(pid, tree, Some(a), addresses, depth)
-        }));
+        tasks.push(std::thread::spawn(move || build_pointer_tree(pid, tree, Some(a), addresses, depth)));
     }
     for task in tasks {
-        task.join().map_err(|e| {
-            BetrayalError::BadWrite(format!(
-                "thread crashed during pointer map building :: {:#?}",
-                e
-            ))
-        })??;
+        task.join()
+            .map_err(|e| BetrayalError::BadWrite(format!("thread crashed during pointer map building :: {:#?}", e)))??;
     }
     Ok(())
 }
 
-pub fn pointer_map<T: 'static + ReadFromBytes + Serialize + TryFrom<usize>>(
-    pid: i32,
-    address: T,
-    depth: T,
-) -> BetrayalResult<DiGraph<T, ()>> {
+pub fn pointer_map<T: 'static + ReadFromBytes + Serialize + TryFrom<usize>>(pid: i32, address: T, depth: T) -> BetrayalResult<DiGraph<T, ()>> {
     let graph = Default::default();
     build_pointer_tree::<T>(pid, Arc::clone(&graph), None, vec![address], depth)?;
     let graph = graph.lock().clone();
@@ -348,11 +321,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
             .find(|(info, m)| m.base <= address && address < m.ceiling)
             .ok_or(BetrayalError::PartialRead)?;
         let val = read_memory(pid, address, std::mem::size_of::<T>())?;
-        Ok((
-            info.clone(),
-            address,
-            T::read_value(val).map_err(|_e| BetrayalError::PartialRead)?,
-        ))
+        Ok((info.clone(), address, T::read_value(val).map_err(|_e| BetrayalError::PartialRead)?))
     }
 
     pub fn write_at(pid: i32, address: usize, value: T) -> BetrayalResult<()> {
@@ -424,14 +393,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         );
         Ok(mappings
             .into_iter()
-            .map(|m| {
-                (
-                    AddressInfo {
-                        writable: m.perms.writable,
-                    },
-                    m,
-                )
-            })
+            .map(|m| (AddressInfo { writable: m.perms.writable }, m))
             .collect())
     }
 
@@ -468,11 +430,23 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
 
         let pid = self.pid;
         let mappings = self.mappings()?;
-        let mappings: Vec<_> = mappings
+        let mut mappings: Vec<_> = mappings
             .into_iter()
             .unique_by(|(_info, m)| m.base)
             .unique_by(|(_info, m)| m.ceiling)
             .collect();
+
+        match &filter {
+            Filter::IsInValueBox(start, end, arc) => {
+                mappings.retain(|(_, map)| map.contains(*start) || map.contains(*end));
+            }
+            //
+            Filter::InAddressRanges(vec) => {}
+            Filter::IsEqual(_) => {}
+            Filter::InRange(_) => {}
+            Filter::Any => {}
+            Filter::ChangedBy(_) => {}
+        }
 
         let results: Arc<Mutex<Vec<AddressValue<T>>>> = Default::default();
         mappings.into_par_iter().for_each(|(info, map)| {
@@ -497,10 +471,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
     }
 }
 
-async fn run<T: 'static + ReadFromBytes>(
-    pid: i32,
-    tasks: &mut Vec<JoinHandle<()>>,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run<T: 'static + ReadFromBytes>(pid: i32, tasks: &mut Vec<JoinHandle<()>>) -> Result<(), Box<dyn std::error::Error>> {
     let mut process = ProcessQuery::<T>::new(pid);
     process.update_mappings()?;
     let process = Arc::new(Mutex::new(process));
@@ -527,10 +498,7 @@ async fn run<T: 'static + ReadFromBytes>(
                         match process.lock().perform_write(writer) {
                             Ok(_) => {}
                             Err(e) => {
-                                eprintln!(
-                                    " :: [ERR] :: Writer thread crashed with {}. Aborting.",
-                                    e
-                                );
+                                eprintln!(" :: [ERR] :: Writer thread crashed with {}. Aborting.", e);
                                 break;
                             }
                         };
@@ -595,9 +563,9 @@ async fn run<T: 'static + ReadFromBytes>(
                     println!(" :: SUCCESS ::",);
                     log_graph(&mut map, pid)
                 }
-                Command::FindValuesInBox(start, end, values) => {
-                    process.lock().perform_query(Filter::IsInValueBox(start ,end, values.into_iter().collect()))?
-                },
+                Command::FindValuesInBox(start, end, values) => process
+                    .lock()
+                    .perform_query(Filter::IsInValueBox(start, end, Arc::new(values.into_iter().collect())))?,
             },
             Err(e) => {
                 eprintln!("{}", e);
@@ -643,10 +611,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .version(crate_version!())
         .author("Niedźwiedź <wojciech.brozek@niedzwiedz.it>")
         .about("A fast, lightweight memory searcher and editor")
-        .subcommand(
-            App::new("reclass")
-                .about("reclass-like interface for finding structs")
-        )
+        .subcommand(App::new("reclass").about("reclass-like interface for finding structs"))
         .arg(
             Arg::new("pid")
                 .short('p')
@@ -661,7 +626,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .long("variable_type")
                 .value_name("u8 | u16 | u16 | i32 | u32 | i64 | u64")
                 .default_value("i32")
-                .help("currently you need to specify the format up front and only use that until the end of the program. but hey, you can always run multiple instances of this thing. oh yeah and i32 is 32 bits signed, equivalent of 4 bytes in other software"),
+                .help(
+                    "currently you need to specify the format up front and only use that until the end of the program. but hey, you can always run multiple instances of this \
+                     thing. oh yeah and i32 is 32 bits signed, equivalent of 4 bytes in other software",
+                ),
         )
         .get_matches();
     let pid = matches.value_of_t_or_exit("pid");
@@ -680,8 +648,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "u32" => run::<u32>(pid, &mut tasks).await?,
             "i64" => run::<i64>(pid, &mut tasks).await?,
             "u64" => run::<u64>(pid, &mut tasks).await?,
-            // "f32" => run::<f32>(pid, &mut tasks).await?,
-            // "f64" => run::<f64>(pid, &mut tasks).await?,
+            "f32" => run::<f32>(pid, &mut tasks).await?,
+            "f64" => run::<f64>(pid, &mut tasks).await?,
             _ => panic!("unsupported variable type"),
         },
         None => {

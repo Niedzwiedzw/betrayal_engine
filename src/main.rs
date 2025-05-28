@@ -217,7 +217,7 @@ impl AddressInfo {
             .collect::<Vec<_>>()
             .into_iter()
             .map(|((_, curr), (_, _))| curr)
-            .group_by(|m| &m.pathname) // chunks of maps with the same path
+            .chunk_by(|m| &m.pathname) // chunks of maps with the same path
             .into_iter()
             .next()
             .map(|(_, v)| v)?

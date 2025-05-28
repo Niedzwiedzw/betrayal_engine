@@ -34,7 +34,7 @@ impl ReadFromBytes for u8 {
 
     fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
         let mut c = std::io::Cursor::new(val);
-        Ok(c.read_u8()?)
+        c.read_u8()
     }
 
     fn write_bytes<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
@@ -59,7 +59,7 @@ macro_rules! read_from_bytes_impl {
 
             fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
                 let mut c = std::io::Cursor::new(val);
-                Ok(c.$method::<NativeEndian>()?)
+                c.$method::<NativeEndian>()
             }
 
             fn write_bytes<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
@@ -90,7 +90,7 @@ impl ReadFromBytes for OrderedFloat<f32> {
     }
     fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
         let mut c = std::io::Cursor::new(val);
-        Ok(c.read_f32::<NativeEndian>().map(OrderedFloat)?)
+        c.read_f32::<NativeEndian>().map(OrderedFloat)
     }
     fn write_bytes<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
         writer.write_f32::<NativeEndian>(self.0)?;
@@ -111,7 +111,7 @@ impl ReadFromBytes for OrderedFloat<f64> {
     }
     fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
         let mut c = std::io::Cursor::new(val);
-        Ok(c.read_f64::<NativeEndian>().map(OrderedFloat)?)
+        c.read_f64::<NativeEndian>().map(OrderedFloat)
     }
     fn write_bytes<W: Write>(&self, writer: &mut W) -> std::io::Result<()> {
         writer.write_f64::<NativeEndian>(self.0)?;

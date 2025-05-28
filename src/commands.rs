@@ -91,7 +91,7 @@ fn command_parser<T: ReadFromBytes>(i: &str) -> BetrayalResult<Command<T>> {
         ["p", "m", "u64", address, depth] => Ok(Command::PointerMapU64(parse_or_bad_command!(address), parse_or_bad_command!(depth))),
         ["b", start, end, values @ ..] => {
             let (start, end) = (parse_or_bad_command!(start), parse_or_bad_command!(end));
-            Ok(Command::FindValuesInBox(start, end, values.iter().map(|v| v.parse().map_err(|_e| BetrayalError::BadCommand(format!("invalid value")))).collect::<Result<Vec<_>, _>>()?))
+            Ok(Command::FindValuesInBox(start, end, values.iter().map(|v| v.parse().map_err(|_e| BetrayalError::BadCommand("invalid value".to_string()))).collect::<Result<Vec<_>, _>>()?))
         },
         _ => Err(BetrayalError::BadCommand("command not found".to_string())),
     }

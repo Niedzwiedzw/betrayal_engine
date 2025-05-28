@@ -23,7 +23,7 @@ impl Printable for ReclassResult {
     fn print(&self, indent_level: usize) -> String {
         let mut s = String::new();
         let indent = indent(indent_level);
-        write!(s, "{indent}-- {name} -- \n", name = self.name).expect("failed to write");
+        writeln!(s, "{indent}-- {name} -- ", name = self.name).expect("failed to write");
         write!(s, "{}", self.fields.print(indent_level + 1)).expect("failed to write");
         s
     }
@@ -55,7 +55,7 @@ impl<'a> Printable for FieldEntry<'a> {
 impl Printable for &FieldResult {
     fn print(&self, indent_level: usize) -> String {
         let s = match self {
-            FieldResult::Padding(_) => format!("~"),
+            FieldResult::Padding(_) => "~".to_string(),
             FieldResult::U16(v) => format!("(U16) {:<19}", v.print(0)),
             FieldResult::I16(v) => format!("(I16) {:<19}", v.print(0)),
             FieldResult::U32(v) => format!("(U32) {:<19}", v.print(0)),
@@ -82,7 +82,7 @@ impl<T: Display> Printable for ValueResult<T> {
                 ValueResult::Ok(_, val) => {
                     val.to_string()
                 }
-                ValueResult::Err(e) => format!("<ERR: {}>", e.to_string()),
+                ValueResult::Err(e) => format!("<ERR: {}>", e),
                 ValueResult::Padding(_) => String::from("~"),
             }
         )
@@ -96,7 +96,6 @@ impl Printable for ConfigResult {
             .map(|e| e.print(indent_level))
             .collect::<Vec<_>>()
             .join("\n\n")
-            .into()
     }
 }
 

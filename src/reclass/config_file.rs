@@ -48,7 +48,7 @@ impl<T> From<BetrayalResult<(AddressInfo, T)>> for ValueResult<T> {
     fn from(r: BetrayalResult<(AddressInfo, T)>) -> Self {
         match r {
             Ok((info, v)) => Self::Ok(info, v),
-            Err(e) => Self::Err(format!("error :: {}", e)),
+            Err(e) => Self::Err(format!("error :: {e}")),
         }
     }
 }
@@ -90,8 +90,7 @@ impl FieldResult {
                 .iter()
                 .map(|(_, result)| result)
                 .next()
-                .map(|s| s.info())
-                .flatten(),
+                .and_then(|s| s.info()),
         }
     }
 }
@@ -161,7 +160,7 @@ impl Field {
                         match result.compare_value() {
                             Some(v) if &v == value => {
                                 println!("\n\nfound! addres: {address} + Padding({offset})\n");
-                                return result.into();
+                                return result;
                             }
                             _ => {
                                 last_result = result;
@@ -169,7 +168,7 @@ impl Field {
                         }
                     }
                 }
-                last_result.into()
+                last_result
             }
         }
     }
@@ -314,7 +313,7 @@ impl Default for ReclassStruct {
         Self {
             name: "SomeClass".to_string(),
             fields: (0..5)
-                .map(|i| (format!("field_{}", i), Field::I32))
+                .map(|i| (format!("field_{i}"), Field::I32))
                 .chain(std::iter::once((
                     "field_6".to_string(),
                     Field::Pointer32(Box::new(Field::I16)),

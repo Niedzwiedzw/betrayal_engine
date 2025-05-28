@@ -1,7 +1,7 @@
-use crate::{error::BetrayalResult, memory::ReadFromBytes, AddressInfo, ProcessQuery};
+use crate::{AddressInfo, ProcessQuery, error::BetrayalResult, memory::ReadFromBytes};
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::convert::TryInto;
+use std::{convert::TryInto, mem::size_of};
 
 pub fn read_memory<T: ReadFromBytes>(pid: i32, address: usize) -> BetrayalResult<(AddressInfo, T)> {
     ProcessQuery::<T>::new(pid)
@@ -73,7 +73,7 @@ pub enum FieldResult {
 impl FieldResult {
     pub fn info(&self) -> Option<&AddressInfo> {
         match self {
-            FieldResult::Padding(s) => None,
+            FieldResult::Padding(_s) => None,
             FieldResult::U16(r) => r.info(),
             FieldResult::U32(r) => r.info(),
             FieldResult::U64(r) => r.info(),
@@ -99,19 +99,19 @@ impl Field {
     pub fn size(&self) -> usize {
         match self {
             Field::Padding(size) => *size,
-            Field::I32 => std::mem::size_of::<i32>(),
-            Field::I16 => std::mem::size_of::<i16>(),
-            Field::U8 => std::mem::size_of::<u8>(),
+            Field::I32 => size_of::<i32>(),
+            Field::I16 => size_of::<i16>(),
+            Field::U8 => size_of::<u8>(),
             // Field::F32 => std::mem::size_of::<f32>(),
             // Field::F64 => std::mem::size_of::<f64>(),
-            Field::Pointer32(_) => std::mem::size_of::<u32>(),
-            Field::Pointer64(_) => std::mem::size_of::<u64>(),
+            Field::Pointer32(_) => size_of::<u32>(),
+            Field::Pointer64(_) => size_of::<u64>(),
             Field::Struct(_) => 0,
-            Field::U16 => std::mem::size_of::<u16>(),
-            Field::U32 => std::mem::size_of::<u32>(),
-            Field::I64 => std::mem::size_of::<i64>(),
-            Field::U64 => std::mem::size_of::<u64>(),
-            Field::SearchValues(v) => 0,
+            Field::U16 => size_of::<u16>(),
+            Field::U32 => size_of::<u32>(),
+            Field::I64 => size_of::<i64>(),
+            Field::U64 => size_of::<u64>(),
+            Field::SearchValues(_v) => 0,
         }
     }
 

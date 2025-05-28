@@ -32,10 +32,7 @@ type FieldEntry<'a> = (&'a String, &'a FieldResult);
 impl Printable for IndexMap<String, FieldResult> {
     fn print(&self, indent_level: usize) -> String {
         self.iter()
-            .filter(|(_, f)| match f {
-                FieldResult::Padding(_) => false,
-                _ => true,
-            })
+            .filter(|(_, f)| !matches!(f, FieldResult::Padding(_)))
             .map(|v| v.print(indent_level))
             .collect::<Vec<_>>()
             .join("\n")
@@ -82,7 +79,7 @@ impl<T: Display> Printable for ValueResult<T> {
                 ValueResult::Ok(_, val) => {
                     val.to_string()
                 }
-                ValueResult::Err(e) => format!("<ERR: {}>", e),
+                ValueResult::Err(e) => format!("<ERR: {e}>"),
                 ValueResult::Padding(_) => String::from("~"),
             }
         )

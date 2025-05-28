@@ -1,20 +1,12 @@
 use crate::{
     error::{BetrayalError, BetrayalResult},
-    reclass::{
-        config_file::Config,
-        display::Printable,
-    },
+    reclass::{config_file::Config, display::Printable},
 };
-use notify::{watcher, DebouncedEvent, RecursiveMode, Watcher};
+use notify::{DebouncedEvent, RecursiveMode, Watcher, watcher};
 use serde_yaml::{from_str, to_string};
 use std::os::unix::fs::PermissionsExt;
 use std::sync::mpsc::channel;
-use std::{
-    fs::read_to_string,
-    io::Write,
-    path::PathBuf,
-    time::Duration,
-};
+use std::{fs::read_to_string, io::Write, path::PathBuf, time::Duration};
 
 pub fn run(pid: i32) -> BetrayalResult<()> {
     println!("running reclass");
@@ -66,7 +58,7 @@ pub fn run(pid: i32) -> BetrayalResult<()> {
                         match result {
                             Ok(result) => println!("{}", result.print(0)),
                             Err(e) => {
-                                eprintln!("ERROR: \n {}", e)
+                                eprintln!("ERROR: \n {e}")
                             }
                         }
                     }

@@ -1,3 +1,5 @@
+#![allow(clippy::unit_arg)]
+
 pub mod commands;
 pub mod helpers;
 pub mod memory;
@@ -30,14 +32,17 @@ use {
         sync::Arc,
         thread::JoinHandle,
     },
+    tap::Pipe,
+    tracing::instrument,
 };
 
 mod error;
 mod process;
 
+#[instrument(level = "TRACE", ret, err)]
 pub fn take_input<T>(prompt: &str) -> Result<T>
 where
-    T: FromStr,
+    T: FromStr + Debug,
     T::Err: std::error::Error + Send + Sync + 'static,
 {
     let mut input_string = String::new();
@@ -49,7 +54,21 @@ where
     T::from_str(input_string.trim()).context("converting to string")
 }
 
+#[instrument(level = "TRACE")]
 pub fn read_memory(pid: i32, address: usize, bytes_requested: usize) -> BetrayalResult<Vec<u8>> {
+    for _i in 0..10 {
+        if let Ok(res) = try_read_memory(pid, address, bytes_requested) {
+            return Ok(res);
+        }
+    }
+    try_read_memory(pid, address, bytes_requested)
+}
+
+#[instrument(level = "TRACE")]
+fn try_read_memory(pid: i32, address: usize, bytes_requested: usize) -> BetrayalResult<Vec<u8>> {
+    if bytes_requested > 32 * 1024 * 1024 * 1024 {
+        return Err(BetrayalError::RequestTooBig(bytes_requested));
+    }
     let mut buffer = vec![0u8; bytes_requested];
     let remote = RemoteIoVec {
         base: address,
@@ -61,8 +80,8 @@ pub fn read_memory(pid: i32, address: usize, bytes_requested: usize) -> Betrayal
         &[remote],
     ) {
         Ok(bytes_read) => bytes_read,
-        Err(_error) => {
-            return Err(BetrayalError::PartialRead);
+        Err(error) => {
+            return Err(BetrayalError::NixError(error));
         }
     };
 
@@ -72,6 +91,7 @@ pub fn read_memory(pid: i32, address: usize, bytes_requested: usize) -> Betrayal
     Ok(buffer)
 }
 
+#[instrument(level = "TRACE", ret, err)]
 pub fn write_memory(pid: i32, address: usize, buffer: Vec<u8>) -> BetrayalResult<()> {
     let bytes_requested = buffer.len();
     let remote = RemoteIoVec {
@@ -152,6 +172,7 @@ pub struct AddressInfo {
     pub writable: bool,
 }
 
+#[derive(Debug)]
 pub struct StaticLocation {
     pub map_path: String,
     pub offset: usize,
@@ -159,6 +180,7 @@ pub struct StaticLocation {
 }
 
 impl AddressInfo {
+    #[instrument(level = "TRACE", ret, err)]
     pub fn from_address<T: memory::ReadFromBytes>(
         process: &ProcessQuery<T>,
         address: usize,
@@ -171,11 +193,13 @@ impl AddressInfo {
         Ok(*info)
     }
 
+    #[instrument(level = "TRACE", ret)]
     pub fn is_static(&self) -> bool {
         !self.writable
     }
 
     /// file with permission RW, either with a name, or directly following a named map (without a gap!!)
+    #[instrument(level = "TRACE", ret)]
     pub fn static_location(&self, pid: i32, address: usize) -> Option<StaticLocation> {
         use procmaps::Path;
         if !self.writable {
@@ -236,6 +260,7 @@ impl AddressInfo {
 }
 
 impl From<&Map> for AddressInfo {
+    #[instrument(level = "TRACE", ret)]
     fn from(m: &Map) -> Self {
         Self {
             writable: m.perms.writable,
@@ -244,18 +269,23 @@ impl From<&Map> for AddressInfo {
 }
 
 #[extension_traits::extension(pub trait MapExt)]
-impl Map {
+impl Map
+where
+    Self: Debug,
+{
     fn contains(&self, addr: usize) -> bool {
         self.base <= addr && addr <= self.ceiling
     }
 }
 
+#[instrument(level = "TRACE", ret, err)]
 pub fn find_equal_to<T: ReadFromBytes>(pid: i32, value: T) -> BetrayalResult<Vec<AddressValue<T>>> {
     let mut process = ProcessQuery::<T>::new(pid);
     process.perform_new_query(Filter::IsEqual(value))?;
     Ok(process.results.into_values().collect())
 }
 
+#[instrument(level = "TRACE", ret, err)]
 pub fn find_in_range<T: ReadFromBytes>(
     pid: i32,
     min: T,
@@ -268,6 +298,7 @@ pub fn find_in_range<T: ReadFromBytes>(
 
 use petgraph::graph::DiGraph;
 
+#[instrument(level = "TRACE")]
 fn log_graph<T: ReadFromBytes + Serialize + TryFrom<usize>>(graph: &DiGraph<T, ()>) {
     for edge in graph.node_indices() {
         print!("[*]");
@@ -283,6 +314,7 @@ fn log_graph<T: ReadFromBytes + Serialize + TryFrom<usize>>(graph: &DiGraph<T, (
     println!();
 }
 
+#[instrument(level = "TRACE", ret, err)]
 pub fn build_pointer_tree<T: 'static + ReadFromBytes + Serialize + TryFrom<usize>>(
     pid: i32,
     tree: Arc<Mutex<DiGraph<T, ()>>>,
@@ -320,6 +352,7 @@ pub fn build_pointer_tree<T: 'static + ReadFromBytes + Serialize + TryFrom<usize
     Ok(())
 }
 
+#[instrument(level = "TRACE", ret, err)]
 pub fn pointer_map<T: 'static + ReadFromBytes + Serialize + TryFrom<usize>>(
     pid: i32,
     address: T,
@@ -332,6 +365,7 @@ pub fn pointer_map<T: 'static + ReadFromBytes + Serialize + TryFrom<usize>>(
 }
 
 impl<T: ReadFromBytes> ProcessQuery<T> {
+    #[instrument(level = "TRACE", ret)]
     pub fn new(pid: i32) -> Self {
         Self {
             pid,
@@ -340,6 +374,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         }
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     pub fn read_at(&mut self, pid: i32, address: usize) -> BetrayalResult<AddressValue<T>> {
         if self.mappings.is_empty() {
             self.update_mappings()?; // oof
@@ -357,6 +392,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         ))
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     pub fn write_at(pid: i32, address: usize, value: T) -> BetrayalResult<()> {
         let mut buffer = vec![];
         value
@@ -366,6 +402,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         Ok(())
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     pub fn update_results(&mut self) -> BetrayalResult<()> {
         let mut invalid_regions = vec![];
         let mut results = self.results.clone();
@@ -385,6 +422,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         Ok(())
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     pub fn perform_write(&mut self, writer: Writer<T>) -> BetrayalResult<()> {
         let (selected_address, value) = writer;
         let (_info, address, _current_value) = self
@@ -396,6 +434,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         Ok(())
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     pub fn perform_new_query(&mut self, filter: Filter<T>) -> BetrayalResult<()> {
         let results = self
             .query(filter.clone())?
@@ -406,6 +445,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         self.results = results;
         Ok(())
     }
+    #[instrument(level = "TRACE", ret, err)]
     pub fn perform_query(&mut self, filter: Filter<T>) -> BetrayalResult<()> {
         if self.results.is_empty() {
             self.perform_new_query(filter.clone())?;
@@ -418,6 +458,7 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         Ok(())
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     pub fn mappings_all_with_unreadable(pid: i32) -> BetrayalResult<Vec<(AddressInfo, Map)>> {
         let mappings = std::mem::take(
             procmaps::Mappings::from_pid(pid)
@@ -437,16 +478,19 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
             .collect())
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     pub fn mappings_all(pid: i32) -> BetrayalResult<Vec<(AddressInfo, Map)>> {
         Ok(Self::mappings_all_with_unreadable(pid)?
             .into_iter()
             .collect())
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     fn mappings(&self) -> BetrayalResult<Box<impl Iterator<Item = &(AddressInfo, Map)>>> {
         Ok(Box::new(self.mappings.iter()))
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     pub fn in_address_space(&self, value: i32) -> BetrayalResult<bool> {
         Ok(self
             .mappings()?
@@ -454,10 +498,12 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
             .any(|(_info, map)| map.base as i32 <= value && value <= map.ceiling as i32))
     }
 
+    #[instrument(level = "TRACE", ret, err)]
     pub fn update_mappings(&mut self) -> BetrayalResult<()> {
         self.mappings = Self::mappings_all(self.pid)?;
         Ok(())
     }
+    #[instrument(level = "TRACE", ret, err)]
     fn query<'process, 'result>(
         &'process mut self,
         filter: Filter<T>,
@@ -489,28 +535,44 @@ impl<T: ReadFromBytes> ProcessQuery<T> {
         }
 
         let results: Arc<Mutex<Vec<AddressValue<T>>>> = Default::default();
-        mappings.into_par_iter().for_each(|(info, map)| {
-            let results = Arc::clone(&results);
-            let filter = filter.clone();
-            let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
-            let mut results_chunk = match read_memory(pid, map.base, map.ceiling - map.base) {
-                Ok(m) => T::possible_values(&m[..], map.base)
-                    .map(|(address, value)| (*info, address, value))
-                    .filter(|result| filter.clone().matches(*result, &dummy_results))
-                    .collect(),
-                Err(_e) => {
-                    vec![]
-                }
-            };
-            results.lock().append(&mut results_chunk);
-        });
+        mappings
+            .into_par_iter()
+            .for_each(|(info, map)| {
+                let results = Arc::clone(&results);
+                let filter = filter.clone();
+                let dummy_results = Default::default(); // this should work for now cause this is only ran on the initial scan... I hope
+                #[allow(clippy::identity_op)]
+                const CHUNK: usize = 1 * 1024 * 1024 * 1024;
 
-        println!(" :: scanning done ::");
-        let results = results.lock().clone();
-        Ok(results)
+                match (map.base..map.ceiling)
+                    .step_by(CHUNK)
+                    .map(|start| (start, (start + CHUNK).min(map.ceiling)))
+                    .map(|(start, end)| {
+                        read_memory(pid, start, end - start).map(|chunk| (start, chunk))
+                    })
+                    .try_for_each(|chunk| {
+                        chunk.map(|(start, chunk)| {
+                            results.lock().extend(
+                                T::possible_values(&chunk, start)
+                                    .map(|(a, v)| (*info, a, v))
+                                    .filter(|result| {
+                                        filter.clone().matches(*result, &dummy_results)
+                                    }),
+                            )
+                        })
+                    }) {
+                    Ok(_) => {}
+                    Err(reason) => {
+                        tracing::error!(?info, "results will be incomplete, reason:\n{reason:?}")
+                    }
+                }
+            })
+            .pipe(|_| results.lock().clone())
+            .pipe(Ok)
     }
 }
 
+#[instrument(level = "TRACE", ret, err)]
 async fn run<T: 'static + ReadFromBytes>(
     pid: i32,
     tasks: &mut Vec<JoinHandle<()>>,
@@ -652,8 +714,47 @@ async fn run<T: 'static + ReadFromBytes>(
     Ok(())
 }
 
+mod logging {
+    use {
+        std::str::FromStr,
+        tracing::Level,
+        tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
+    };
+
+    /// Sets up tracing with a level from the RUST_LOG env var and output to stderr
+    ///
+    /// Falls back to INFO level if RUST_LOG is not set or invalid
+    pub fn setup_tracing() {
+        // Get the log level from RUST_LOG env var, default to INFO
+        let log_level = std::env::var("RUST_LOG")
+            .ok()
+            .and_then(|level| Level::from_str(&level).ok())
+            .unwrap_or(Level::INFO);
+
+        // Create a filter from the log level
+        let filter = EnvFilter::builder()
+            .with_default_directive(log_level.into())
+            .from_env_lossy();
+
+        // Set up the formatting layer
+        let fmt_layer = fmt::layer()
+            .with_writer(std::io::stderr)
+            .with_ansi(true) // Enable colors in terminal
+            .with_target(true) // Include event targets
+            .with_thread_ids(false) // Optional: disable thread IDs
+            .with_thread_names(false); // Optional: disable thread names
+
+        // Install the subscriber
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .init();
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    logging::setup_tracing();
     let matches = App::new("Betrayal Engine")
         .version(crate_version!())
         .author("Niedźwiedź <wojciech.brozek@niedzwiedz.it>")

@@ -7,6 +7,8 @@ pub fn windowed<'b, 'a: 'b, T>(
     (0..collection.len() - size + 1).map(move |start| &collection[start..(start + size)])
 }
 
+pub mod chunk_while;
+
 #[cfg(test)]
 mod test_helpers {
     use itertools::Itertools;

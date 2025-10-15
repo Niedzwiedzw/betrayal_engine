@@ -12,35 +12,16 @@ use {
 pub type AddressEntry<T> = (usize, T);
 
 pub trait ReadFromBytes:
-    Default
-    + std::fmt::Display
-    + std::fmt::Debug
-    + Sized
-    + FromStr
-    + Clone
-    + PartialEq
-    + PartialOrd
-    + Add<Output = Self>
-    + Sub<Output = Self>
-    + Ord
-    + Copy
-    + Sync
-    + Send
+    Default + std::fmt::Display + std::fmt::Debug + Sized + FromStr<Err: std::fmt::Debug> + Clone + PartialEq + PartialOrd + Add<Output = Self> + Sub<Output = Self> + Ord + Copy + Sync + Send
 {
-    fn possible_values<'a>(
-        reader: &'a [u8],
-        base: usize,
-    ) -> impl Iterator<Item = AddressEntry<Self>> + 'a;
+    fn possible_values<'a>(reader: &'a [u8], base: usize) -> impl Iterator<Item = AddressEntry<Self>> + 'a;
 
-    fn read_value(val: Vec<u8>) -> std::io::Result<Self>;
+    fn read_value(val: &[u8]) -> std::io::Result<Self>;
     fn write_bytes<W: Write>(&self, writer: &mut W) -> std::io::Result<()>;
 }
 
 impl ReadFromBytes for u8 {
-    fn possible_values<'a>(
-        memory: &'a [u8],
-        base: usize,
-    ) -> impl Iterator<Item = AddressEntry<Self>> + 'a {
+    fn possible_values<'a>(memory: &'a [u8], base: usize) -> impl Iterator<Item = AddressEntry<Self>> + 'a {
         (0..(memory.len() - std::mem::size_of::<Self>())).filter_map(move |start| {
             Some((
                 base + start,
@@ -51,7 +32,7 @@ impl ReadFromBytes for u8 {
         })
     }
 
-    fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
+    fn read_value(val: &[u8]) -> std::io::Result<Self> {
         let mut c = std::io::Cursor::new(val);
         c.read_u8()
     }
@@ -65,10 +46,7 @@ impl ReadFromBytes for u8 {
 macro_rules! read_from_bytes_impl {
     ($SelfT:ty, $method:ident, $write_method:ident) => {
         impl ReadFromBytes for $SelfT {
-            fn possible_values<'a>(
-                memory: &'a [u8],
-                base: usize,
-            ) -> impl Iterator<Item = AddressEntry<Self>> + 'a {
+            fn possible_values<'a>(memory: &'a [u8], base: usize) -> impl Iterator<Item = AddressEntry<Self>> + 'a {
                 (0..(memory.len() - std::mem::size_of::<$SelfT>())).filter_map(move |start| {
                     Some((
                         base + start,
@@ -79,7 +57,7 @@ macro_rules! read_from_bytes_impl {
                 })
             }
 
-            fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
+            fn read_value(val: &[u8]) -> std::io::Result<Self> {
                 let mut c = std::io::Cursor::new(val);
                 c.$method::<NativeEndian>()
             }
@@ -100,10 +78,7 @@ read_from_bytes_impl!(i16, read_i16, write_i16);
 read_from_bytes_impl!(u16, read_u16, write_u16);
 
 impl ReadFromBytes for OrderedFloat<f32> {
-    fn possible_values<'a>(
-        memory: &'a [u8],
-        base: usize,
-    ) -> impl Iterator<Item = AddressEntry<OrderedFloat<f32>>> + 'a {
+    fn possible_values<'a>(memory: &'a [u8], base: usize) -> impl Iterator<Item = AddressEntry<OrderedFloat<f32>>> + 'a {
         (0..(memory.len() - std::mem::size_of::<f32>())).filter_map(move |start| {
             Some((
                 base + start,
@@ -114,7 +89,7 @@ impl ReadFromBytes for OrderedFloat<f32> {
             ))
         })
     }
-    fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
+    fn read_value(val: &[u8]) -> std::io::Result<Self> {
         let mut c = std::io::Cursor::new(val);
         c.read_f32::<NativeEndian>().map(OrderedFloat)
     }
@@ -124,10 +99,7 @@ impl ReadFromBytes for OrderedFloat<f32> {
     }
 }
 impl ReadFromBytes for OrderedFloat<f64> {
-    fn possible_values<'a>(
-        memory: &'a [u8],
-        base: usize,
-    ) -> impl Iterator<Item = AddressEntry<OrderedFloat<f64>>> + 'a {
+    fn possible_values<'a>(memory: &'a [u8], base: usize) -> impl Iterator<Item = AddressEntry<OrderedFloat<f64>>> + 'a {
         (0..(memory.len() - std::mem::size_of::<f64>())).filter_map(move |start| {
             Some((
                 base + start,
@@ -138,7 +110,7 @@ impl ReadFromBytes for OrderedFloat<f64> {
             ))
         })
     }
-    fn read_value(val: Vec<u8>) -> std::io::Result<Self> {
+    fn read_value(val: &[u8]) -> std::io::Result<Self> {
         let mut c = std::io::Cursor::new(val);
         c.read_f64::<NativeEndian>().map(OrderedFloat)
     }

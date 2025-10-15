@@ -43,10 +43,11 @@
                 webkitgtk_4_1
                 xdotool
                 xdo
+                rustup
                 (rust-bin.selectLatestNightlyWith (toolchain:
                   toolchain.default.override {
-                    extensions = ["rust-src" "rust-analyzer"];
-                    targets = ["wasm32-unknown-unknown"];
+                    extensions = ["rust-src" "rust-analyzer" "rustfmt"];
+                    targets = ["x86_64-unknown-linux-musl"];
                   }))
               ]
               ++ pkgs.lib.optionals pkg.stdenv.isDarwin [

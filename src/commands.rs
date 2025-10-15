@@ -1,7 +1,8 @@
-use crate::memory::ReadFromBytes;
-use crate::{error::BetrayalResult, Filter};
-use crate::{BetrayalError, Writer};
-use std::str::FromStr;
+use {
+    crate::{Filter, Writer, memory::ReadFromBytes},
+    anyhow::Result,
+    std::str::FromStr,
+};
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum Command<T: ReadFromBytes> {
@@ -18,12 +19,11 @@ pub enum Command<T: ReadFromBytes> {
     PointerMapU64(u64, u64),
 }
 
-
 macro_rules! parse_or_bad_command {
     ($value:expr) => {
         $value
             .parse()
-            .map_err(|_e| BetrayalError::BadCommand(format!("invalid value")))?
+            .map_err(|e| anyhow::anyhow!("invalid value: {} ({e:?})", $value))?
     };
 }
 
@@ -58,47 +58,45 @@ info registers               # current register values
 
 "#;
 
-fn command_parser<T: ReadFromBytes>(i: &str) -> BetrayalResult<Command<T>> {
+fn command_parser<T: ReadFromBytes>(i: &str) -> Result<Command<T>> {
     let command = i.split_whitespace().collect::<Vec<_>>();
     match &command[..] {
         [] => Ok(Command::Refresh),
         ["h" | "?" | "help"] => Ok(Command::Help),
         ["q"] => Ok(Command::Quit),
-        ["w", index, value] => Ok(Command::Write((
-            parse_or_bad_command!(index),
-            parse_or_bad_command!(value),
-        ))),
+        ["w", index, value] => Ok(Command::Write((parse_or_bad_command!(index), parse_or_bad_command!(value)))),
         ["a", address] => Ok(Command::AddAddress(parse_or_bad_command!(address))),
-        ["a", address_start, address_end] => Ok(Command::AddAddressRange(
-            parse_or_bad_command!(address_start),
-            parse_or_bad_command!(address_end),
-        )),
-        ["k", index, value] => Ok(Command::KeepWriting((
-            parse_or_bad_command!(index),
-            parse_or_bad_command!(value),
-        ))),
+        ["a", address_start, address_end] => Ok(Command::AddAddressRange(parse_or_bad_command!(address_start), parse_or_bad_command!(address_end))),
+        ["k", index, value] => Ok(Command::KeepWriting((parse_or_bad_command!(index), parse_or_bad_command!(value)))),
         ["f", "u"] => Ok(Command::PerformFilter(Filter::Any)),
         ["f", compare, value] => Ok(Command::PerformFilter(match *compare {
             "e" => Filter::IsEqual(parse_or_bad_command!(value)),
             "c" => Filter::ChangedBy(parse_or_bad_command!(value)),
-            _ => return Err(BetrayalError::BadCommand("command not found".to_string())),
+            command => return Err(anyhow::anyhow!("command not found: '{command}'")),
         })),
-        ["f", "r", start, end] => Ok(Command::PerformFilter(Filter::InRange((
-            parse_or_bad_command!(start),
-            parse_or_bad_command!(end),
-        )))),
+        ["f", "r", start, end] => Ok(Command::PerformFilter(Filter::InRange((parse_or_bad_command!(start), parse_or_bad_command!(end))))),
         ["p", "m", "u32", address, depth] => Ok(Command::PointerMapU32(parse_or_bad_command!(address), parse_or_bad_command!(depth))),
         ["p", "m", "u64", address, depth] => Ok(Command::PointerMapU64(parse_or_bad_command!(address), parse_or_bad_command!(depth))),
         ["b", start, end, values @ ..] => {
             let (start, end) = (parse_or_bad_command!(start), parse_or_bad_command!(end));
-            Ok(Command::FindValuesInBox(start, end, values.iter().map(|v| v.parse().map_err(|_e| BetrayalError::BadCommand("invalid value".to_string()))).collect::<Result<Vec<_>, _>>()?))
-        },
-        _ => Err(BetrayalError::BadCommand("command not found".to_string())),
+            Ok(Command::FindValuesInBox(
+                start,
+                end,
+                values
+                    .iter()
+                    .map(|v| {
+                        v.parse()
+                            .map_err(|e| anyhow::anyhow!("invalid value: '{v}' {e:?}"))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        other => Err(anyhow::anyhow!("command not found: '{other:?}'")),
     }
 }
 
 impl<T: ReadFromBytes> FromStr for Command<T> {
-    type Err = BetrayalError;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         command_parser(s)
@@ -111,10 +109,7 @@ mod test_command_parsing {
 
     #[test]
     fn test_filter_command() {
-        assert_eq!(
-            "f e 44".parse::<Command<i32>>().unwrap(),
-            Command::PerformFilter(Filter::IsEqual(44))
-        )
+        assert_eq!("f e 44".parse::<Command<i32>>().unwrap(), Command::PerformFilter(Filter::IsEqual(44)))
     }
 
     #[test]
@@ -124,9 +119,6 @@ mod test_command_parsing {
 
     #[test]
     fn test_write() {
-        assert_eq!(
-            "w 3 2137".parse::<Command<i32>>().unwrap(),
-            Command::Write((3, 2137)),
-        )
+        assert_eq!("w 3 2137".parse::<Command<i32>>().unwrap(), Command::Write((3, 2137)),)
     }
 }

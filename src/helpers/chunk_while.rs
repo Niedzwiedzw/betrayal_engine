@@ -78,11 +78,7 @@ where
         self.done = true;
 
         // Yield whatever remains in `current_chunk` (if anything).
-        if !self.current_chunk.is_empty() {
-            Some(mem::take(&mut self.current_chunk))
-        } else {
-            None
-        }
+        if !self.current_chunk.is_empty() { Some(mem::take(&mut self.current_chunk)) } else { None }
     }
 }
 

@@ -1,9 +1,7 @@
-use std::fmt::{Display, Write};
-
-use indexmap::IndexMap;
-
-use super::config_file::{
-    ConfigEntryResult, ConfigResult, FieldResult, ReclassResult, ValueResult,
+use {
+    super::config_file::{ConfigEntryResult, ConfigResult, FieldResult, ReclassResult, ValueResult},
+    indexmap::IndexMap,
+    std::fmt::{Display, Write},
 };
 
 pub trait Printable {
@@ -98,10 +96,7 @@ impl Printable for ConfigResult {
 
 impl Printable for ConfigEntryResult {
     fn print(&self, indent_level: usize) -> String {
-        let Self {
-            base_address,
-            struct_definition,
-        } = self;
+        let Self { base_address, struct_definition } = self;
         let indent = indent(indent_level);
         let struct_definition = struct_definition.print(indent_level + 1);
         format!("{indent}:: (*{base_address}) ::\n{struct_definition}")

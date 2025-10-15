@@ -1,32 +1,26 @@
-use std::convert::TryInto;
-
-use rhai::{Engine, EvalAltResult, Scope};
-
-use crate::error::{BetrayalError, BetrayalResult};
+use {
+    anyhow::Result,
+    rhai::{Engine, EvalAltResult, Scope},
+    std::convert::TryInto,
+};
 
 macro_rules! constant {
     ($scope:expr, $field:ident) => {
-        $scope.push_constant(
-            format!("SIZE_{}", stringify!($field)),
-            super::config_file::Field::$field.size() as i64,
-        );
+        $scope.push_constant(format!("SIZE_{}", stringify!($field)), super::config_file::Field::$field.size() as i64);
     };
     ($scope:expr, $name:literal, $size:expr) => {
         $scope.push_constant(format!("SIZE_{}", $name), $size as i64);
     };
 }
 
-fn try_cast_to_usize<T: 'static + TryInto<usize> + Clone + Copy>(
-    engine: &Engine,
-    mut scope: Scope,
-    script: &str,
-) -> BetrayalResult<usize> {
+fn try_cast_to_usize<T: 'static + TryInto<usize> + Clone + Copy>(engine: &Engine, mut scope: Scope, script: &str) -> Result<usize> {
     let address: T = engine
         .eval_with_scope::<T>(&mut scope, script)
-        .map_err(|e| BetrayalError::ScriptingError(e.to_string()))?;
-    address.try_into().ok().ok_or(BetrayalError::ScriptingError(
-        "failed to convert your value to your machine's `usize`".to_string(),
-    ))
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    address
+        .try_into()
+        .ok()
+        .ok_or(anyhow::anyhow!("failed to convert your value to your machine's `usize`".to_string()))
 }
 
 macro_rules! or_err {
@@ -39,10 +33,7 @@ macro_rules! or_err {
 }
 
 fn static_address(pid: i32, file: &str) -> Result<i64, Box<EvalAltResult>> {
-    let maps = or_err!(
-        crate::ProcessQuery::<u8>::mappings_all(pid),
-        format!("static_address :: {}", file)
-    );
+    let maps = or_err!(crate::ProcessQuery::<u8>::mappings_all(pid), format!("static_address :: {}", file));
     let maps = maps
         .into_iter()
         .filter(|(_info, map)| match &map.pathname {
@@ -51,12 +42,7 @@ fn static_address(pid: i32, file: &str) -> Result<i64, Box<EvalAltResult>> {
         })
         .collect::<Vec<_>>();
     if maps.len() > 1 {
-        return Err(format!(
-            "static_address :: more than one memory entry with name [{}] found ({})",
-            file,
-            maps.len()
-        )
-        .into());
+        return Err(format!("static_address :: more than one memory entry with name [{}] found ({})", file, maps.len()).into());
     }
 
     let (_info, map) = maps
@@ -72,13 +58,10 @@ fn static_address(pid: i32, file: &str) -> Result<i64, Box<EvalAltResult>> {
     //         Some(map) => map,
     //         None => return Err(format!("static_address :: {} :: no such map", file).into())
     //     };
-    Ok(or_err!(
-        map.base.try_into(),
-        "that address doesn't fit in your address space"
-    ))
+    Ok(or_err!(map.base.try_into(), "that address doesn't fit in your address space"))
 }
 
-pub fn calculate_address(pid: i32, script: &str) -> BetrayalResult<usize> {
+pub fn calculate_address(pid: i32, script: &str) -> Result<usize> {
     let mut engine = Engine::new();
     let mut scope = Scope::new();
     // scope.push_constant(format!("SIZE_{}", "I32"), super::config_file::Field::I32.size());

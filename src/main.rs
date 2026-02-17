@@ -564,6 +564,18 @@ async fn run<T: 'static + ReadFromBytes>(pid: i32, tasks: &mut Vec<JoinHandle<()
                 Command::Refresh => process.lock().update_results()?,
                 Command::PerformFilter(filter) => process.lock().perform_query(filter)?,
                 Command::Write(writer) => process.lock().perform_write(writer)?,
+                Command::WriteAll(value) => {
+                    let mut process = process.lock();
+                    process
+                        .results
+                        .keys()
+                        .copied()
+                        .collect_vec()
+                        .into_iter()
+                        .try_for_each(|address| ProcessQuery::write_at(process.pid, address, value))
+                        .and_then(|()| process.update_results())
+                        .context("performing write for all values")?
+                }
                 Command::KeepWriting(writer) => {
                     let process = Arc::clone(&process);
                     tasks.push(std::thread::spawn(move || {

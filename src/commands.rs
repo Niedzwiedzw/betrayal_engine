@@ -38,6 +38,7 @@ COMMANDS:
 "a <address> <address?>          -> adds address to the list (or range of addresses if second argument is present)
 "q"                              -> quits the program
 "h" or "?" or "help"             -> prints this help message
+"w a <value>"                    -> writes specified value to all results
 "w <index> <value>"              -> writes a specified value to address at results
 "k <index> <value>"              -> same as "w" but does that in a loop so that value stays the same (god mode etc)
 "f u"                            -> a NO-OP filter, for new scans it will match all the values (very memory intensive), equivalent to refresh for subsequent scans
